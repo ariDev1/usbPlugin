@@ -4,7 +4,7 @@ An Omarchy bar plugin for USB development boards, bootloaders, and serial
 adapters. It uses Linux sysfs and the Python standard library, with no Python
 packages or background service required.
 
-![USB Boards – bar widget](usbPlugin-screenshot.png)
+![USB Boards – bar widget](usbPlugin-screenshot1.png)
 
 ## Features
 
