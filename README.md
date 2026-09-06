@@ -32,6 +32,9 @@ omarchy plugin add https://github.com/ariDev1/usbPlugin --enable
 omarchy bar put dev.usb-boards --section right
 ```
 
+## Screenshots
+
+![USB Boards – bar widget](screenshots/usb-boards-bar.png){width=400}
 For local development, `install.sh` links this checkout into the Omarchy plugin
 directory and adds it to the bar:
 
