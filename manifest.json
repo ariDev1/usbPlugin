@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "dev.usb-boards",
+  "name": "USB Boards",
+  "version": "0.3.0",
+  "author": "Rene",
+  "description": "Development-board discovery and serial monitor",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "USB Boards",
+    "description": "Discover USB boards, bootloaders, and serial adapters",
+    "category": "System",
+    "allowMultiple": false
+  }
+}
