@@ -4,6 +4,8 @@ An Omarchy bar plugin for USB development boards, bootloaders, and serial
 adapters. It uses Linux sysfs and the Python standard library, with no Python
 packages or background service required.
 
+![USB Boards – bar widget](usbPlugin-screenshot.png.png)
+
 ## Features
 
 - detects serial devices plus DFU, UF2/bootloader, CMSIS-DAP, and JTAG modes
