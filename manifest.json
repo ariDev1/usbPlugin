@@ -3,7 +3,7 @@
   "id": "dev.usb-boards",
   "name": "USB Boards",
   "version": "0.3.0",
-  "author": "Rene",
+  "author": "ariDev1",
   "description": "Development-board discovery and serial monitor",
   "kinds": [
     "bar-widget"
