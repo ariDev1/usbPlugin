@@ -117,16 +117,18 @@ def infer_mode(usb_product: str, has_serial: bool) -> str:
     return "serial" if has_serial else "usb"
 
 
-def identify_board(
+def identify_board_evidence(
     vendor: str,
     product: str,
     manufacturer: str,
     usb_product: str,
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
+    """Return board label, confidence, and the evidence used for identification."""
+
     description = f"{manufacturer} {usb_product}".lower()
     exact = BOARD_IDS.get((vendor, product))
     if exact:
-        return exact[0], "exact"
+        return exact[0], "exact", "vid-pid"
 
     names = (
         ("nano esp32", "Arduino Nano ESP32"),
@@ -138,17 +140,32 @@ def identify_board(
     )
     for marker, name in names:
         if marker in description:
-            return name, "exact"
+            return name, "probable", "descriptor"
 
     if "arduino nano" in description:
-        return "Arduino Nano", "probable"
+        return "Arduino Nano", "probable", "descriptor"
     if vendor in BOARD_VENDORS:
-        return clean_name(usb_product) or BOARD_VENDORS[vendor], "probable"
+        board = clean_name(usb_product)
+        if board:
+            return board, "probable", "descriptor"
+        return BOARD_VENDORS[vendor], "probable", "vendor"
 
     bridge = BRIDGES.get((vendor, product), "")
     if bridge:
-        return f"Serial development board ({bridge})", "bridge-only"
-    return clean_name(usb_product) or "USB serial device", "unknown"
+        return f"Serial development board ({bridge})", "bridge-only", "bridge"
+    return clean_name(usb_product) or "USB serial device", "unknown", "unknown"
+
+
+def identify_board(
+    vendor: str,
+    product: str,
+    manufacturer: str,
+    usb_product: str,
+) -> tuple[str, str]:
+    board, confidence, _evidence = identify_board_evidence(
+        vendor, product, manufacturer, usb_product
+    )
+    return board, confidence
 
 
 def is_board_candidate(vendor: str, product: str, manufacturer: str, usb_product: str) -> bool:
@@ -237,7 +254,7 @@ def usb_details(usb: Path, properties: dict[str, str] | None = None) -> dict[str
 def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[str, object]:
     vendor = details["vendor"]
     product = details["product"]
-    board, confidence = identify_board(
+    board, confidence, identification_evidence = identify_board_evidence(
         vendor, product, details["manufacturer"], details["usb_product"]
     )
     known_mode = BOARD_IDS.get((vendor, product), ("", ""))[1]
@@ -247,6 +264,7 @@ def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[st
         "id": serial or f"{vendor}:{product}:{usb.name}",
         "board": board,
         "confidence": confidence,
+        "identificationEvidence": identification_evidence,
         "connected": True,
         "serialAvailable": has_serial,
         "mode": mode,

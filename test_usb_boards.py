@@ -45,6 +45,12 @@ class IdentifyBoardTests(unittest.TestCase):
             ("Feather RP2040", "probable"),
         )
 
+    def test_descriptor_match_is_probable_not_exact(self):
+        self.assertEqual(
+            identify_board("ffff", "0001", "Arduino", "Nano ESP32"),
+            ("Arduino Nano ESP32", "probable"),
+        )
+
     def test_modes_are_inferred_from_usb_description(self):
         self.assertEqual(infer_mode("STM32 DFU", False), "dfu")
         self.assertEqual(infer_mode("CMSIS-DAP", False), "debug")
@@ -109,6 +115,7 @@ class ScannerFixtureTests(unittest.TestCase):
             self.assertEqual(devices[0]["port"], str(port))
             self.assertEqual(devices[0]["stablePath"], str(by_id / "usb-WCH_ABC-if00-port0"))
             self.assertTrue(devices[0]["serialAvailable"])
+            self.assertEqual(devices[0].get("identificationEvidence"), "bridge")
 
     def test_bootloader_without_tty_is_reported(self):
         with TemporaryDirectory() as directory:
@@ -121,6 +128,7 @@ class ScannerFixtureTests(unittest.TestCase):
             self.assertEqual(devices[0]["board"], "Raspberry Pi RP2 Bootloader")
             self.assertEqual(devices[0]["mode"], "bootloader")
             self.assertFalse(devices[0]["serialAvailable"])
+            self.assertEqual(devices[0].get("identificationEvidence"), "vid-pid")
 
     def test_multiple_ttys_are_deduplicated_by_physical_device(self):
         with TemporaryDirectory() as directory:
@@ -134,6 +142,44 @@ class ScannerFixtureTests(unittest.TestCase):
             self.assertEqual(len(devices), 1)
             self.assertEqual(devices[0]["port"], str(first))
             self.assertEqual(devices[0]["ports"], [str(first), str(second)])
+
+    def test_descriptor_identification_reports_descriptor_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = self.make_usb(root, "5-1", "ffff", "0001", "Arduino", "Nano ESP32")
+            self.add_tty(root, usb, "ttyACM0")
+
+            devices = self.fixture_scan(root)
+
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0]["board"], "Arduino Nano ESP32")
+            self.assertEqual(devices[0]["confidence"], "probable")
+            self.assertEqual(devices[0].get("identificationEvidence"), "descriptor")
+
+    def test_unknown_serial_device_reports_unknown_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = self.make_usb(root, "6-1", "ffff", "0002", "Example", "USB Serial")
+            self.add_tty(root, usb, "ttyUSB0")
+
+            devices = self.fixture_scan(root)
+
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0]["confidence"], "unknown")
+            self.assertEqual(devices[0].get("identificationEvidence"), "unknown")
+
+    def test_vendor_fallback_reports_vendor_evidence(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = self.make_usb(root, "7-1", "239a", "9999", "Adafruit", "")
+            self.add_tty(root, usb, "ttyACM0")
+
+            devices = self.fixture_scan(root)
+
+            self.assertEqual(len(devices), 1)
+            self.assertEqual(devices[0]["board"], "Adafruit development board")
+            self.assertEqual(devices[0]["confidence"], "probable")
+            self.assertEqual(devices[0].get("identificationEvidence"), "vendor")
 
     def test_unrelated_usb_device_without_tty_is_ignored(self):
         with TemporaryDirectory() as directory:
