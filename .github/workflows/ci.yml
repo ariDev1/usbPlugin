@@ -37,7 +37,7 @@ jobs:
         run: python3 -m unittest -v
 
       - name: Compile Python sources
-        run: python3 -m py_compile usb_boards.py serial_monitor.py test_usb_boards.py
+        run: python3 -m py_compile usb_boards.py serial_monitor.py tools/usb_boards_acceptance.py test_usb_boards.py test_acceptance.py
 
       - name: Check installer shell syntax
         run: bash -n install.sh
