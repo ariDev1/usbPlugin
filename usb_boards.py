@@ -17,6 +17,13 @@ SYS_USB = Path("/sys/bus/usb/devices")
 DEV_SERIAL_BY_ID = Path("/dev/serial/by-id")
 LOCK_DIRS = (Path("/run/lock"), Path("/var/lock"))
 
+# A non-empty USB serial string is evidence, but it is not always unique.
+# The classic CP2102 factory default is "0001", so it must not be used as a
+# portable profile identity without stronger evidence.
+KNOWN_NON_UNIQUE_USB_SERIALS = {
+    ("10c4", "ea60", "0001"),
+}
+
 # A bridge identifies the USB-to-serial chip, not the board behind it.
 BRIDGES = {
     ("0403", "6001"): "FTDI FT232",
@@ -251,6 +258,16 @@ def usb_details(usb: Path, properties: dict[str, str] | None = None) -> dict[str
     }
 
 
+def serial_identity_quality(vendor: str, product: str, serial: str) -> str:
+    """Classify whether a reported USB serial is safe for portable profile matching."""
+
+    if not serial:
+        return "missing"
+    if (vendor, product, serial) in KNOWN_NON_UNIQUE_USB_SERIALS:
+        return "known-default"
+    return "reported"
+
+
 def device_identity(
     vendor: str,
     product: str,
@@ -259,7 +276,7 @@ def device_identity(
 ) -> tuple[str, str, bool]:
     """Return a profile identity without treating a connection path as device proof."""
 
-    if serial:
+    if serial_identity_quality(vendor, product, serial) == "reported":
         return f"usb-serial:{vendor}:{product}:{serial}", "usb-serial", False
     return f"usb-topology:{vendor}:{product}:{topology}", "usb-topology", True
 

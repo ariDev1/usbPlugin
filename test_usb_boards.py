@@ -8,7 +8,7 @@ import termios
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from usb_boards import device_access, identify_board, infer_mode, is_board_candidate, lock_info, scan
+from usb_boards import device_access, device_identity, identify_board, infer_mode, is_board_candidate, lock_info, scan
 from serial_monitor import SessionLogger, configure, line_ending_bytes, monitor, parse_data_format, session_log_path
 
 
@@ -223,6 +223,20 @@ class ScannerFixtureTests(unittest.TestCase):
             root = Path(directory)
             self.make_usb(root, "4-1", "046d", "c534", "Logitech", "USB Receiver")
             self.assertEqual(self.fixture_scan(root), [])
+
+
+class DeviceIdentityQualityTests(unittest.TestCase):
+    def test_cp2102_default_serial_is_not_portable_identity(self):
+        self.assertEqual(
+            device_identity("10c4", "ea60", "0001", "2-1.2"),
+            ("usb-topology:10c4:ea60:2-1.2", "usb-topology", True),
+        )
+
+    def test_cp2102_non_default_serial_remains_portable_identity(self):
+        self.assertEqual(
+            device_identity("10c4", "ea60", "ABC123", "2-1.2"),
+            ("usb-serial:10c4:ea60:ABC123", "usb-serial", False),
+        )
 
 
 class PanelIdentityContractTests(unittest.TestCase):
