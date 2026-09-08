@@ -218,6 +218,37 @@ class ScannerFixtureTests(unittest.TestCase):
             self.assertEqual(devices[0].get("identityEvidence"), "usb-topology")
             self.assertTrue(devices[0].get("identityPortBound"))
 
+    def test_identification_scope_is_explicit_and_evidence_is_preserved(self):
+        cases = (
+            ("board", "vid-pid", "10-1", "2341", "0070", "Arduino", "Nano ESP32", True),
+            ("board", "descriptor", "10-2", "ffff", "0001", "Arduino", "Nano ESP32", True),
+            ("function", "vid-pid", "10-3", "303a", "1001", "Espressif", "USB JTAG/serial", True),
+            ("bootloader", "vid-pid", "10-4", "2e8a", "0003", "Raspberry Pi", "RP2 Boot", False),
+            ("bridge", "bridge", "10-5", "1a86", "7523", "QinHeng Electronics", "USB Serial", True),
+            ("family", "vendor", "10-6", "239a", "9999", "Adafruit", "", True),
+            ("unknown", "unknown", "10-7", "ffff", "0002", "Example", "USB Serial", True),
+        )
+
+        for expected_scope, expected_evidence, name, vendor, product, manufacturer, description, has_tty in cases:
+            with self.subTest(scope=expected_scope, vendor=vendor, product=product):
+                with TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    usb = self.make_usb(
+                        root, name, vendor, product, manufacturer, description
+                    )
+                    if has_tty:
+                        self.add_tty(root, usb, "ttyUSB0")
+
+                    devices = self.fixture_scan(root)
+
+                    self.assertEqual(len(devices), 1)
+                    self.assertEqual(
+                        devices[0].get("identificationScope"), expected_scope
+                    )
+                    self.assertEqual(
+                        devices[0].get("identificationEvidence"), expected_evidence
+                    )
+
     def test_unrelated_usb_device_without_tty_is_ignored(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

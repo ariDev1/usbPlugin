@@ -43,23 +43,24 @@ BRIDGES = {
 }
 
 # Entries here are safe to show without a TTY because the VID/PID identifies a
-# development-board function rather than an arbitrary USB peripheral.
+# known development board, USB function, or bootloader rather than an arbitrary
+# USB peripheral.
 BOARD_IDS = {
-    ("0483", "5740"): ("STM32 Virtual COM Port", "serial"),
-    ("0483", "df11"): ("STM32 DFU Bootloader", "dfu"),
-    ("0d28", "0204"): ("Arm DAPLink / micro:bit", "debug"),
-    ("16c0", "0478"): ("Teensy HalfKay Bootloader", "bootloader"),
-    ("16c0", "0483"): ("Teensy", "serial"),
-    ("2341", "003d"): ("Arduino Due Programming Port", "serial"),
-    ("2341", "003e"): ("Arduino Due Native Port", "serial"),
-    ("2341", "0042"): ("Arduino Mega 2560", "serial"),
-    ("2341", "0043"): ("Arduino Uno", "serial"),
-    ("2341", "0058"): ("Arduino Nano Every", "serial"),
-    ("2341", "0070"): ("Arduino Nano ESP32", "serial"),
-    ("2e8a", "0003"): ("Raspberry Pi RP2 Bootloader", "bootloader"),
-    ("2e8a", "0005"): ("Raspberry Pi Pico", "serial"),
-    ("2e8a", "000a"): ("Raspberry Pi Pico SDK", "serial"),
-    ("303a", "1001"): ("Espressif USB JTAG/Serial", "debug"),
+    ("0483", "5740"): ("STM32 Virtual COM Port", "serial", "function"),
+    ("0483", "df11"): ("STM32 DFU Bootloader", "dfu", "bootloader"),
+    ("0d28", "0204"): ("Arm DAPLink / micro:bit", "debug", "function"),
+    ("16c0", "0478"): ("Teensy HalfKay Bootloader", "bootloader", "bootloader"),
+    ("16c0", "0483"): ("Teensy", "serial", "function"),
+    ("2341", "003d"): ("Arduino Due Programming Port", "serial", "board"),
+    ("2341", "003e"): ("Arduino Due Native Port", "serial", "board"),
+    ("2341", "0042"): ("Arduino Mega 2560", "serial", "board"),
+    ("2341", "0043"): ("Arduino Uno", "serial", "board"),
+    ("2341", "0058"): ("Arduino Nano Every", "serial", "board"),
+    ("2341", "0070"): ("Arduino Nano ESP32", "serial", "board"),
+    ("2e8a", "0003"): ("Raspberry Pi RP2 Bootloader", "bootloader", "bootloader"),
+    ("2e8a", "0005"): ("Raspberry Pi Pico", "serial", "function"),
+    ("2e8a", "000a"): ("Raspberry Pi Pico SDK", "serial", "function"),
+    ("303a", "1001"): ("Espressif USB JTAG/Serial", "debug", "function"),
 }
 
 BOARD_VENDORS = {
@@ -124,18 +125,18 @@ def infer_mode(usb_product: str, has_serial: bool) -> str:
     return "serial" if has_serial else "usb"
 
 
-def identify_board_evidence(
+def identify_board_details(
     vendor: str,
     product: str,
     manufacturer: str,
     usb_product: str,
-) -> tuple[str, str, str]:
-    """Return board label, confidence, and the evidence used for identification."""
+) -> tuple[str, str, str, str]:
+    """Return board label, confidence, evidence, and identification scope."""
 
     description = f"{manufacturer} {usb_product}".lower()
     exact = BOARD_IDS.get((vendor, product))
     if exact:
-        return exact[0], "exact", "vid-pid"
+        return exact[0], "exact", "vid-pid", exact[2]
 
     names = (
         ("nano esp32", "Arduino Nano ESP32"),
@@ -147,20 +148,32 @@ def identify_board_evidence(
     )
     for marker, name in names:
         if marker in description:
-            return name, "probable", "descriptor"
+            return name, "probable", "descriptor", "board"
 
     if "arduino nano" in description:
-        return "Arduino Nano", "probable", "descriptor"
+        return "Arduino Nano", "probable", "descriptor", "board"
     if vendor in BOARD_VENDORS:
         board = clean_name(usb_product)
         if board:
-            return board, "probable", "descriptor"
-        return BOARD_VENDORS[vendor], "probable", "vendor"
+            return board, "probable", "descriptor", "family"
+        return BOARD_VENDORS[vendor], "probable", "vendor", "family"
 
     bridge = BRIDGES.get((vendor, product), "")
     if bridge:
-        return f"Serial development board ({bridge})", "bridge-only", "bridge"
-    return clean_name(usb_product) or "USB serial device", "unknown", "unknown"
+        return f"Serial development board ({bridge})", "bridge-only", "bridge", "bridge"
+    return clean_name(usb_product) or "USB serial device", "unknown", "unknown", "unknown"
+
+
+def identify_board_evidence(
+    vendor: str,
+    product: str,
+    manufacturer: str,
+    usb_product: str,
+) -> tuple[str, str, str]:
+    board, confidence, evidence, _scope = identify_board_details(
+        vendor, product, manufacturer, usb_product
+    )
+    return board, confidence, evidence
 
 
 def identify_board(
@@ -284,10 +297,10 @@ def device_identity(
 def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[str, object]:
     vendor = details["vendor"]
     product = details["product"]
-    board, confidence, identification_evidence = identify_board_evidence(
+    board, confidence, identification_evidence, identification_scope = identify_board_details(
         vendor, product, details["manufacturer"], details["usb_product"]
     )
-    known_mode = BOARD_IDS.get((vendor, product), ("", ""))[1]
+    known_mode = BOARD_IDS.get((vendor, product), ("", "", ""))[1]
     mode = known_mode or infer_mode(details["usb_product"], has_serial)
     serial = details["serial"]
     identity_key, identity_evidence, identity_port_bound = device_identity(
@@ -301,6 +314,7 @@ def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[st
         "board": board,
         "confidence": confidence,
         "identificationEvidence": identification_evidence,
+        "identificationScope": identification_scope,
         "connected": True,
         "serialAvailable": has_serial,
         "mode": mode,
