@@ -19,6 +19,11 @@ Panel {
   property bool cursorActive: false
   property int selectedIndex: 0
   property string renamingKey: ""
+  readonly property bool wideMode: root.devices.length >= 2
+  readonly property int compactPanelWidth: Style.space(380)
+  readonly property int widePanelWidth: Style.space(760)
+  readonly property int compactPanelHeight: Style.space(600)
+  readonly property int widePanelHeight: Style.space(760)
   readonly property int baudRate: Number(setting("baudRate", 115200))
   readonly property string lineEnding: String(setting("lineEnding", "lf"))
   readonly property bool sessionLogging: setting("sessionLogging", true)
@@ -378,8 +383,13 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(600))
+    contentWidth: panel.fittedContentWidth(
+      root.wideMode ? root.widePanelWidth : root.compactPanelWidth
+    )
+    contentHeight: panel.fittedContentHeight(
+      content.implicitHeight,
+      root.wideMode ? root.widePanelHeight : root.compactPanelHeight
+    )
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -459,18 +469,27 @@ Panel {
             width: parent.width
           }
 
-          Repeater {
-            model: root.devices
+          Grid {
+            id: deviceGrid
+            width: parent.width
+            columns: root.wideMode ? 2 : 1
+            columnSpacing: Style.space(12)
+            rowSpacing: Style.space(12)
 
-            Column {
-              id: deviceColumn
-              required property var modelData
-              required property int index
-              width: content.width
-              spacing: Style.space(8)
+            Repeater {
+              model: root.devices
 
-              PanelSeparator {
-                visible: deviceColumn.index > 0
+              Column {
+                id: deviceColumn
+                required property var modelData
+                required property int index
+                width: root.wideMode
+                  ? (deviceGrid.width - deviceGrid.columnSpacing) / 2
+                  : deviceGrid.width
+                spacing: Style.space(8)
+
+                PanelSeparator {
+                  visible: !root.wideMode && deviceColumn.index > 0
                 foreground: root.bar.foreground
               }
 
@@ -709,6 +728,7 @@ Panel {
 
               }
             }
+          }
           }
 
           Item {
