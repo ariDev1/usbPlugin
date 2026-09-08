@@ -5,6 +5,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Ui
 import qs.Commons
+import "ProfileStore.js" as ProfileStore
 
 Panel {
   id: root
@@ -12,6 +13,7 @@ Panel {
   ipcTarget: "dev.usb-boards"
   manageIpc: false
 
+  property string pluginVersion: ""
   property var connectedDevices: []
   property string scanError: ""
   property bool cursorActive: false
@@ -22,11 +24,20 @@ Panel {
   readonly property bool sessionLogging: setting("sessionLogging", true)
   readonly property var baudOptions: [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600]
   readonly property var dataFormatOptions: ["8N1", "8N2", "7E1", "7O1"]
-  readonly property var deviceProfiles: parseProfiles(setting("deviceProfiles", "{}"))
-  readonly property var devices: mergeDevices(connectedDevices, deviceProfiles)
+  readonly property var legacyDeviceProfiles: parseProfiles(setting("deviceProfiles", "{}"))
+  readonly property string deviceProfileStoreRaw: String(setting("deviceProfileStore", ""))
+  readonly property var profileStoreResult: ProfileStore.parseStore(deviceProfileStoreRaw)
+  readonly property var profileStore: profileStoreResult.ok
+    ? profileStoreResult.store : ProfileStore.emptyStore()
+  readonly property var devices: ProfileStore.projectDevices(connectedDevices, profileStore)
   readonly property bool accessRequired: devices.some(function(device) {
     return device.connected && device.serialAvailable && (!device.readable || !device.writable)
   })
+
+  readonly property string manifestPath: {
+    var url = Qt.resolvedUrl("manifest.json").toString()
+    return url.indexOf("file://") === 0 ? decodeURIComponent(url.substring(7)) : url
+  }
 
   readonly property string scannerPath: {
     var url = Qt.resolvedUrl("usb_boards.py").toString()
@@ -38,6 +49,15 @@ Panel {
     return url.indexOf("file://") === 0 ? decodeURIComponent(url.substring(7)) : url
   }
 
+  function updatePluginVersion(raw) {
+    try {
+      var parsed = JSON.parse(String(raw || "{}"))
+      pluginVersion = parsed && parsed.version ? String(parsed.version) : ""
+    } catch (error) {
+      pluginVersion = ""
+    }
+  }
+
   function refresh() {
     if (!scanProc.running) scanProc.running = true
   }
@@ -47,6 +67,7 @@ Panel {
       var parsed = JSON.parse(String(raw || "[]"))
       connectedDevices = Array.isArray(parsed) ? parsed : []
       scanError = ""
+      migrateProfiles(connectedDevices)
       if (selectedIndex >= devices.length) selectedIndex = Math.max(0, devices.length - 1)
     } catch (error) {
       scanError = "Could not read USB device information"
@@ -67,84 +88,26 @@ Panel {
     }
   }
 
-  function mergeDevices(connected, profiles) {
-    var merged = []
-    var present = {}
-    for (var i = 0; i < connected.length; i++) {
-      var device = connected[i]
-      merged.push(device)
-      var currentKey = profileKey(device)
-      if (currentKey) present[currentKey] = true
-      var oldKey = legacyProfileKey(device)
-      if (oldKey) present[oldKey] = true
-    }
-    for (var key in profiles) {
-      if (present[key]) continue
-      var profile = profiles[key] || {}
-      merged.push({
-        id: key,
-        identityKey: profile.identityKey || key,
-        identityEvidence: profile.identityEvidence || "",
-        identityPortBound: profile.identityPortBound === true,
-        board: profile.board || profile.nickname || "Remembered serial device",
-        confidence: "remembered",
-        connected: false,
-        serialAvailable: false,
-        mode: "offline",
-        port: "",
-        ports: [],
-        stablePath: key.indexOf("/dev/") === 0 ? key : "",
-        vendorId: profile.vendorId || "",
-        productId: profile.productId || "",
-        manufacturer: profile.manufacturer || "",
-        usbProduct: profile.usbProduct || "",
-        serial: profile.serial || "",
-        bridge: profile.bridge || "",
-        driver: "",
-        locked: false,
-        lockPid: 0,
-        readable: false,
-        writable: false,
-        permissions: "",
-        group: ""
-      })
-    }
-    return merged
-  }
-
-  function legacyProfileKey(device) {
-    return device && (device.stablePath || device.id) ? (device.stablePath || device.id) : ""
+  function migrateProfiles(scannedDevices) {
+    var result = ProfileStore.migrate(
+      deviceProfileStoreRaw,
+      legacyDeviceProfiles,
+      scannedDevices || []
+    )
+    if (!result.ok || !result.changed) return
+    persistSettings({ deviceProfileStore: result.canonical })
   }
 
   function profileKey(device) {
-    if (!device) return ""
-    return device.identityKey ? device.identityKey : legacyProfileKey(device)
+    return ProfileStore.recordKey(device)
   }
 
   function profileFor(device) {
-    var key = profileKey(device)
-    var profile = key ? deviceProfiles[key] : undefined
-    if (profile && typeof profile === "object") return profile
-
-    // Old profiles used the connection path as identity. Reuse that mapping
-    // only when the scanner reports a USB serial identity. A topology-only
-    // device must not silently inherit an ambiguous legacy profile.
-    if (device && device.identityEvidence !== "usb-topology") {
-      var legacyKey = legacyProfileKey(device)
-      profile = legacyKey ? deviceProfiles[legacyKey] : undefined
-      if (profile && typeof profile === "object") return profile
-    }
-    return {}
+    return ProfileStore.profileForDevice(profileStore, device)
   }
 
   function hasProfile(device) {
-    var key = profileKey(device)
-    if (key && deviceProfiles[key] !== undefined) return true
-    if (device && device.identityEvidence !== "usb-topology") {
-      var legacyKey = legacyProfileKey(device)
-      return legacyKey !== "" && deviceProfiles[legacyKey] !== undefined
-    }
-    return false
+    return ProfileStore.hasProfileForDevice(profileStore, device)
   }
 
   function effectiveBaud(device) {
@@ -188,13 +151,17 @@ Panel {
     }
   }
 
+  function persistDeviceProfile(device, changes) {
+    if (!profileStoreResult.ok) return
+    var data = profileData(device)
+    for (var name in changes) data[name] = changes[name]
+    var result = ProfileStore.upsertDeviceProfile(profileStore, device, data)
+    if (!result.ok || result.canonical === profileStoreResult.canonical) return
+    persistSettings({ deviceProfileStore: result.canonical })
+  }
+
   function updateDeviceProfile(device, changes) {
-    var key = profileKey(device)
-    if (!key) return
-    var next = parseProfiles(setting("deviceProfiles", "{}"))
-    next[key] = profileData(device)
-    for (var name in changes) next[key][name] = changes[name]
-    persistSettings({ deviceProfiles: JSON.stringify(next) })
+    persistDeviceProfile(device, changes)
   }
 
   function displayName(device) {
@@ -221,13 +188,8 @@ Panel {
   }
 
   function saveNickname(device, nickname) {
-    var key = profileKey(device)
-    if (!key) return
-    var next = parseProfiles(setting("deviceProfiles", "{}"))
     var name = String(nickname || "").trim()
-    next[key] = profileData(device)
-    next[key].nickname = name
-    persistSettings({ deviceProfiles: JSON.stringify(next) })
+    persistDeviceProfile(device, { nickname: name })
     renamingKey = ""
   }
 
@@ -263,13 +225,8 @@ Panel {
   }
 
   function rememberProfile(device) {
-    var key = profileKey(device)
-    if (!key) return
-    var next = parseProfiles(setting("deviceProfiles", "{}"))
-    if (!next[key]) {
-      next[key] = profileData(device)
-      persistSettings({ deviceProfiles: JSON.stringify(next) })
-    }
+    if (!device || hasProfile(device)) return
+    persistDeviceProfile(device, {})
   }
 
   function openMonitor(device) {
@@ -342,6 +299,16 @@ Panel {
 
   Component.onCompleted: refresh()
   onOpenedChanged: if (opened) { refresh(); cursorActive = false }
+
+  FileView {
+    id: manifestFile
+    path: root.manifestPath
+    watchChanges: true
+    printErrors: false
+    onLoaded: root.updatePluginVersion(text())
+    onLoadFailed: function(error) { root.pluginVersion = "" }
+    onFileChanged: reload()
+  }
 
   Process {
     id: scanProc
@@ -700,14 +667,34 @@ Panel {
             }
           }
 
-          Text {
-            text: "Defaults · " + root.baudRate + " baud · " + root.lineEnding
-              + " · logs " + (root.sessionLogging ? "on" : "off") + " · R refreshes"
-            color: Qt.darker(root.bar.foreground, 1.4)
-            font.family: root.bar.fontFamily
-            font.pixelSize: Style.font.caption
+          Item {
             width: parent.width
-            horizontalAlignment: Text.AlignHCenter
+            implicitHeight: defaultsFooter.implicitHeight
+              + (versionFooter.visible ? versionFooter.implicitHeight + Style.space(2) : 0)
+
+            Text {
+              id: defaultsFooter
+              text: "Defaults · " + root.baudRate + " baud · " + root.lineEnding
+                + " · logs " + (root.sessionLogging ? "on" : "off") + " · R refreshes"
+              color: Qt.darker(root.bar.foreground, 1.4)
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              id: versionFooter
+              visible: root.pluginVersion !== ""
+              text: "v" + root.pluginVersion
+              color: root.bar.foreground
+              opacity: 0.28
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              anchors.top: defaultsFooter.bottom
+              anchors.topMargin: Style.space(2)
+              anchors.right: parent.right
+            }
           }
         }
       }

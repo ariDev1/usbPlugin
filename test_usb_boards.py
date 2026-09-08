@@ -270,21 +270,46 @@ class DeviceIdentityQualityTests(unittest.TestCase):
         )
 
 
-class PanelIdentityContractTests(unittest.TestCase):
+class PanelProfileStoreContractTests(unittest.TestCase):
     def panel_source(self):
         return Path(__file__).with_name("Panel.qml").read_text()
 
-    def test_profile_key_prefers_scanner_identity_key(self):
-        source = self.panel_source()
-        self.assertIn("device.identityKey ? device.identityKey : legacyProfileKey(device)", source)
+    def test_panel_imports_pure_profile_store_policy(self):
+        self.assertIn('import "ProfileStore.js" as ProfileStore', self.panel_source())
 
-    def test_port_bound_identity_does_not_reuse_legacy_profile(self):
+    def test_legacy_profiles_remain_read_only_migration_input(self):
         source = self.panel_source()
-        self.assertIn('device.identityEvidence !== "usb-topology"', source)
+        self.assertIn('setting("deviceProfiles", "{}")', source)
+        self.assertNotIn('persistSettings({ deviceProfiles:', source)
+
+    def test_new_profile_writes_use_versioned_store(self):
+        source = self.panel_source()
+        self.assertIn('deviceProfileStore', source)
+        self.assertIn('persistSettings({ deviceProfileStore:', source)
+
+    def test_panel_does_not_restore_stable_path_profile_fallback(self):
+        source = self.panel_source()
+        self.assertNotIn('deviceProfiles[legacyProfileKey', source)
+        self.assertNotIn('function legacyProfileKey', source)
+
+    def test_panel_fails_closed_for_unknown_profile_store(self):
+        source = self.panel_source()
+        self.assertIn('if (!profileStoreResult.ok) return', source)
 
     def test_panel_explains_port_bound_identity(self):
         source = self.panel_source()
         self.assertIn('return "USB PORT"', source)
+
+    def test_panel_version_comes_from_manifest_file(self):
+        source = self.panel_source()
+        self.assertIn('Qt.resolvedUrl("manifest.json")', source)
+        self.assertIn('FileView {', source)
+        self.assertIn('parsed.version', source)
+        self.assertNotIn('manifest.version', source)
+
+    def test_panel_does_not_hard_code_release_version(self):
+        source = self.panel_source()
+        self.assertNotIn('text: "v0.3.1"', source)
 
 
 

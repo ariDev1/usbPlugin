@@ -25,6 +25,14 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Run profile store behavior tests
+        run: node test_profile_store.js
+
       - name: Run unit tests
         run: python3 -m unittest -v
 
