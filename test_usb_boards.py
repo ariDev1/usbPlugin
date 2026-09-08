@@ -1,5 +1,7 @@
 import unittest
 import fcntl
+import os
+import stat
 from pathlib import Path
 import struct
 import termios
@@ -7,7 +9,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from usb_boards import device_access, identify_board, infer_mode, is_board_candidate, lock_info, scan
-from serial_monitor import SessionLogger, configure, line_ending_bytes, parse_data_format, session_log_path
+from serial_monitor import SessionLogger, configure, line_ending_bytes, monitor, parse_data_format, session_log_path
 
 
 class IdentifyBoardTests(unittest.TestCase):
@@ -213,6 +215,104 @@ class SerialMonitorTests(unittest.TestCase):
 
         path = session_log_path(Path("/tmp/usb-logs"), clock=lambda: "2026-08-27T10:00:00")
         self.assertEqual(path, Path("/tmp/usb-logs/2026-08-27T10-00-00.log"))
+
+    def test_session_logger_creates_private_directory_and_log_under_umask_022(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "sessions" / "session.log"
+            previous_umask = os.umask(0o022)
+            try:
+                logger = SessionLogger(path, exclusive=True, private_directory=True)
+                logger.write("RX", b"secret\n")
+                logger.close()
+            finally:
+                os.umask(previous_umask)
+
+            self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_session_logger_rejects_symlink_log_path(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target.txt"
+            target.write_text("unchanged\n")
+            path = root / "session.log"
+            path.symlink_to(target)
+
+            with self.assertRaises(OSError):
+                SessionLogger(path, exclusive=False)
+
+            self.assertEqual(target.read_text(), "unchanged\n")
+
+    def test_session_logger_tightens_existing_private_directory(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory) / "sessions"
+            sessions.mkdir()
+            sessions.chmod(0o755)
+            path = sessions / "session.log"
+
+            logger = SessionLogger(path, exclusive=True, private_directory=True)
+            logger.close()
+
+            self.assertEqual(stat.S_IMODE(sessions.stat().st_mode), 0o700)
+
+    def test_exclusive_session_logger_does_not_reuse_existing_log(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "session.log"
+            path.write_text("existing\n")
+
+            with self.assertRaises(FileExistsError):
+                SessionLogger(path, exclusive=True)
+
+            self.assertEqual(path.read_text(), "existing\n")
+
+    def test_session_logger_directory_factory_uses_collision_suffix(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory) / "sessions"
+            sessions.mkdir()
+            first = sessions / "2026-08-27T10-00-00.log"
+            first.write_text("existing\n")
+
+            logger = SessionLogger.create_in_directory(
+                sessions, clock=lambda: "2026-08-27T10:00:00"
+            )
+            logger.close()
+
+            self.assertTrue((sessions / "2026-08-27T10-00-00-1.log").exists())
+            self.assertEqual(first.read_text(), "existing\n")
+
+    def test_session_logger_directory_factory_rejects_symlink_candidate(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory) / "sessions"
+            sessions.mkdir()
+            target = Path(directory) / "target.txt"
+            target.write_text("unchanged\n")
+            candidate = sessions / "2026-08-27T10-00-00.log"
+            candidate.symlink_to(target)
+
+            with self.assertRaises(OSError):
+                SessionLogger.create_in_directory(
+                    sessions, clock=lambda: "2026-08-27T10:00:00"
+                )
+
+            self.assertEqual(target.read_text(), "unchanged\n")
+            self.assertFalse((sessions / "2026-08-27T10-00-00-1.log").exists())
+
+    def test_monitor_log_directory_uses_private_session_log(self):
+        with TemporaryDirectory() as directory:
+            sessions = Path(directory) / "sessions"
+            with patch("serial_monitor.sys.stderr"):
+                result = monitor(
+                    "/dev/usb-plugin-test-device-that-does-not-exist",
+                    115200,
+                    reconnect=False,
+                    log_dir=sessions,
+                )
+
+            self.assertEqual(result, 2)
+            logs = list(sessions.glob("*.log"))
+            self.assertEqual(len(logs), 1)
+            self.assertEqual(stat.S_IMODE(sessions.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(logs[0].stat().st_mode), 0o600)
 
     @patch("serial_monitor.termios.tcflush")
     @patch("serial_monitor.termios.tcsetattr")

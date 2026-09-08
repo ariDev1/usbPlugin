@@ -11,6 +11,7 @@ import grp
 import os
 from pathlib import Path
 import select
+import stat
 import struct
 import subprocess
 import sys
@@ -55,13 +56,68 @@ def line_ending_bytes(name: str) -> bytes:
         raise ValueError(f"unknown line ending: {name}") from error
 
 
-class SessionLogger:
-    """Append human-readable serial traffic to a session log."""
+def ensure_private_directory(directory: Path) -> None:
+    """Create or tighten a log directory so only its owner can access it."""
 
-    def __init__(self, path: Path, clock=None) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = path.open("a", encoding="utf-8")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(directory, flags)
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise NotADirectoryError(str(directory))
+        os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+
+
+def open_log_file(path: Path, *, exclusive: bool) -> object:
+    """Open a regular log file without following a final-component symlink."""
+
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
+    if exclusive:
+        flags |= os.O_EXCL
+    fd = os.open(path, flags, 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, f"log path is not a regular file: {path}")
+        os.fchmod(fd, 0o600)
+        stream = os.fdopen(fd, "a", encoding="utf-8")
+        fd = -1
+        return stream
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+class SessionLogger:
+    """Append human-readable serial traffic to a private session log."""
+
+    def __init__(self, path: Path, clock=None, *, exclusive: bool = False,
+                 private_directory: bool = False) -> None:
+        if private_directory:
+            ensure_private_directory(path.parent)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        self._file = open_log_file(path, exclusive=exclusive)
         self._clock = clock or (lambda: datetime.now().isoformat(timespec="seconds"))
+
+    @classmethod
+    def create_in_directory(cls, directory: Path, clock=None) -> "SessionLogger":
+        ensure_private_directory(directory)
+        base = session_log_path(directory, clock=clock)
+        for suffix in range(1000):
+            path = base if suffix == 0 else base.with_name(f"{base.stem}-{suffix}{base.suffix}")
+            try:
+                return cls(path, clock=clock, exclusive=True)
+            except FileExistsError:
+                try:
+                    existing_mode = path.lstat().st_mode
+                except FileNotFoundError:
+                    continue
+                if stat.S_ISLNK(existing_mode):
+                    raise OSError(errno.ELOOP, f"refusing symlink log path: {path}")
+                continue
+        raise FileExistsError(errno.EEXIST, "could not allocate a unique session log", str(base))
 
     def write(self, direction: str, data: bytes) -> None:
         text = data.decode("utf-8", errors="replace")
@@ -101,9 +157,14 @@ def configure(fd: int, baud: int, data_format: str = "8N1") -> None:
 
 
 def monitor(port: str, baud: int, line_ending: str = "lf", log_path: Path | None = None,
-            reconnect: bool = True, data_format: str = "8N1") -> int:
+            reconnect: bool = True, data_format: str = "8N1",
+            log_dir: Path | None = None) -> int:
     ending = line_ending_bytes(line_ending)
-    logger = SessionLogger(log_path) if log_path else None
+    logger = (
+        SessionLogger.create_in_directory(log_dir)
+        if log_dir
+        else (SessionLogger(log_path) if log_path else None)
+    )
     fd = None
     old_terminal = None
     permission_denied = False
@@ -223,8 +284,16 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, help="write a timestamped RX/TX log in this directory")
     parser.add_argument("--no-reconnect", action="store_true", help="exit when the device disconnects")
     args = parser.parse_args()
-    log_path = args.log or (session_log_path(args.log_dir) if args.log_dir else None)
-    return monitor(str(args.port), args.baud, args.line_ending, log_path, not args.no_reconnect, args.data_format)
+    log_dir = None if args.log else args.log_dir
+    return monitor(
+        str(args.port),
+        args.baud,
+        args.line_ending,
+        args.log,
+        not args.no_reconnect,
+        args.data_format,
+        log_dir,
+    )
 
 
 if __name__ == "__main__":

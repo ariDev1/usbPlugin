@@ -4,7 +4,7 @@ An Omarchy bar plugin for USB development boards, bootloaders, and serial
 adapters. It uses Linux sysfs and the Python standard library, with no Python
 packages or background service required.
 
-![USB Boards – bar widget](usbPlugin-screenshot1.png)
+![USB Boards – bar widget](preview.png)
 
 ## Features
 
@@ -54,13 +54,39 @@ omarchy bar set dev.usb-boards sessionLogging true
 ```
 
 Line endings are `none`, `lf`, `cr`, or `crlf`. Supported serial formats are
-`8N1`, `8N2`, `7E1`, and `7O1`. Per-device controls override these defaults.
+`8N1`, `8N2`, `7E1`, and `7O1`. Per-device controls override these defaults. Session logging is enabled by
+default and can be disabled globally with:
+
+```bash
+omarchy bar set dev.usb-boards sessionLogging false
+```
+
 Logs are stored under
-`${XDG_STATE_HOME:-~/.local/state}/omarchy/usb-boards/sessions/`.
+`${XDG_STATE_HOME:-~/.local/state}/omarchy/usb-boards/sessions/`. The sessions
+directory is owner-only (`0700`) and new log files are owner-only (`0600`).
+Session logs contain the complete RX/TX serial traffic, so treat them as
+potentially sensitive device data.
 
 If a port is inaccessible, **Grant access** opens a terminal, explains the
 persistent group-membership change, and asks for confirmation before running
 `sudo usermod`. Log out and back in once after granting access.
+
+
+## Remove
+
+Remove the plugin with Omarchy:
+
+```bash
+omarchy plugin remove dev.usb-boards
+```
+
+Omarchy disables the plugin before removing the checkout or local symlink.
+Session logs are kept intentionally. To delete the plugin's stored RX/TX logs
+as well:
+
+```bash
+rm -rf "${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/usb-boards"
+```
 
 ## Supported Hardware
 
