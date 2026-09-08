@@ -523,3 +523,28 @@ test("legacy stable path does not hide unresolved offline profile", () => {
   assert.strictEqual(projected.filter(d => d.connected === false).length, 1)
   assert.strictEqual(projected.find(d => d.connected === false).profileStoreKey, legacyKey)
 })
+
+test("offline identity profile preserves recorded scanner diagnostics", () => {
+  const key = "usb-serial:0403:6001:AB0JQVS6"
+  const store = {
+    schemaVersion: 1,
+    profiles: {
+      [key]: {
+        nickname: "gnarftz",
+        identityKey: key,
+        identityEvidence: "usb-serial",
+        identityPortBound: false,
+        identityQuality: "reported",
+        identificationEvidence: "bridge",
+        identificationScope: "bridge"
+      }
+    },
+    legacyProfiles: {}
+  }
+
+  const projected = Store.projectDevices([], store)
+  assert.strictEqual(projected.length, 1)
+  assert.strictEqual(projected[0].identityQuality, "reported")
+  assert.strictEqual(projected[0].identificationEvidence, "bridge")
+  assert.strictEqual(projected[0].identificationScope, "bridge")
+})

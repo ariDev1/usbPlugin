@@ -298,7 +298,7 @@ class PanelProfileStoreContractTests(unittest.TestCase):
 
     def test_panel_explains_port_bound_identity(self):
         source = self.panel_source()
-        self.assertIn('return "USB PORT"', source)
+        self.assertIn('return "PORT-BOUND"', source)
 
     def test_panel_version_comes_from_manifest_file(self):
         source = self.panel_source()

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "dev.usb-boards",
   "name": "USB Boards",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "author": "ariDev1",
   "repository": "https://github.com/ariDev1/usbPlugin",
   "description": "Development-board discovery and serial monitor",

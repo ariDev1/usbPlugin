@@ -141,6 +141,9 @@ Panel {
       identityKey: device.identityKey || current.identityKey || "",
       identityEvidence: device.identityEvidence || current.identityEvidence || "",
       identityPortBound: device.identityPortBound === true,
+      identityQuality: device.identityQuality || current.identityQuality || "",
+      identificationEvidence: device.identificationEvidence || current.identificationEvidence || "",
+      identificationScope: device.identificationScope || current.identificationScope || "",
       board: device.board || current.board || "USB serial device",
       vendorId: device.vendorId || current.vendorId || "",
       productId: device.productId || current.productId || "",
@@ -267,14 +270,40 @@ Panel {
 
   function identityLabel(device) {
     if (!device) return "NOT RECORDED"
-    if (device.identityEvidence === "usb-serial") return "USB SERIAL"
-    if (device.identityEvidence === "usb-topology") return "USB PORT"
+    if (device.identityEvidence === "usb-serial" && device.identityPortBound === false)
+      return "PORTABLE"
+    if (device.identityEvidence === "usb-topology" && device.identityPortBound === true)
+      return "PORT-BOUND"
     return "NOT RECORDED"
+  }
+
+  function identityReasonLabel(device) {
+    if (!device) return "NOT STORED"
+    if (device.identityQuality === "reported") return "REPORTED USB SERIAL"
+    if (device.identityQuality === "known-default") return "DEFAULT USB SERIAL"
+    if (device.identityQuality === "missing") return "NO USB SERIAL"
+    return "NOT STORED"
+  }
+
+  function identificationScopeLabel(device) {
+    var value = String(device && device.identificationScope || "")
+    return value === "" ? "NOT STORED" : value.toUpperCase()
+  }
+
+  function identificationEvidenceLabel(device) {
+    var value = String(device && device.identificationEvidence || "")
+    if (value === "vid-pid") return "VID/PID"
+    if (value === "") return "NOT STORED"
+    return value.toUpperCase()
   }
 
   function confidenceLabel(device) {
     if (!device) return ""
-    if (!device.connected) return "REMEMBERED DEVICE"
+    if (!device.connected) {
+      if (device.migrationState === "conflict") return "PROFILE CONFLICT"
+      if (device.migrationState === "unresolved") return "PROFILE UNRESOLVED"
+      return "REMEMBERED DEVICE"
+    }
     if (device.confidence === "exact") return "USB-IDENTIFIED"
     if (device.confidence === "probable") return "PROBABLE BOARD"
     if (device.confidence === "bridge-only") return "BOARD UNKNOWN"
@@ -586,10 +615,25 @@ Panel {
                         || String(deviceColumn.modelData.mode || "USB").toUpperCase()
                     }
 
-                    CompactLabel { text: "DEVICE ID" }
-                    CompactValue {
-                      text: root.identityLabel(deviceColumn.modelData)
-                      Layout.columnSpan: 3
+                    GridLayout {
+                      id: identityEvidenceDetails
+                      Layout.columnSpan: 4
+                      Layout.fillWidth: true
+                      columns: 2
+                      columnSpacing: Style.space(12)
+                      rowSpacing: Style.space(2)
+
+                      CompactLabel { text: "IDENTITY" }
+                      CompactValue { text: root.identityLabel(deviceColumn.modelData) }
+
+                      CompactLabel { text: "BASIS" }
+                      CompactValue { text: root.identityReasonLabel(deviceColumn.modelData) }
+
+                      CompactLabel { text: "BOARD SCOPE" }
+                      CompactValue { text: root.identificationScopeLabel(deviceColumn.modelData) }
+
+                      CompactLabel { text: "EVIDENCE" }
+                      CompactValue { text: root.identificationEvidenceLabel(deviceColumn.modelData) }
                     }
 
                     CompactLabel { text: "LOCK" }

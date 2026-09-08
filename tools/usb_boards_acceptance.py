@@ -19,6 +19,7 @@ IDENTITY_FIELDS = (
     "identityKey",
     "identityEvidence",
     "identityPortBound",
+    "identityQuality",
     "vendorId",
     "productId",
     "serial",

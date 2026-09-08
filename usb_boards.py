@@ -303,6 +303,7 @@ def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[st
     known_mode = BOARD_IDS.get((vendor, product), ("", "", ""))[1]
     mode = known_mode or infer_mode(details["usb_product"], has_serial)
     serial = details["serial"]
+    identity_quality = serial_identity_quality(vendor, product, serial)
     identity_key, identity_evidence, identity_port_bound = device_identity(
         vendor, product, serial, usb.name
     )
@@ -311,6 +312,7 @@ def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[st
         "identityKey": identity_key,
         "identityEvidence": identity_evidence,
         "identityPortBound": identity_port_bound,
+        "identityQuality": identity_quality,
         "board": board,
         "confidence": confidence,
         "identificationEvidence": identification_evidence,

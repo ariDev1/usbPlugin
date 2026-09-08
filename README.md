@@ -13,8 +13,8 @@ packages or background service required.
   Adafruit, and Seeed devices
 - recognizes CH34x/CH91xx, CP210x, FTDI, and PL2303 serial bridges
 - groups multiple serial interfaces belonging to one physical USB device
-- shows VID/PID, connection mode, driver, serial number, stable path, locks,
-  and permissions
+- shows VID/PID, identity portability and evidence, connection mode, driver,
+  serial number, stable path, locks, and permissions
 - remembers device names and monitor profiles while devices are disconnected
 - includes a reconnecting serial monitor, selectable format and line ending,
   and optional timestamped RX/TX logs
