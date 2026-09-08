@@ -73,13 +73,19 @@ Panel {
     for (var i = 0; i < connected.length; i++) {
       var device = connected[i]
       merged.push(device)
-      present[profileKey(device)] = true
+      var currentKey = profileKey(device)
+      if (currentKey) present[currentKey] = true
+      var oldKey = legacyProfileKey(device)
+      if (oldKey) present[oldKey] = true
     }
     for (var key in profiles) {
       if (present[key]) continue
       var profile = profiles[key] || {}
       merged.push({
         id: key,
+        identityKey: profile.identityKey || key,
+        identityEvidence: profile.identityEvidence || "",
+        identityPortBound: profile.identityPortBound === true,
         board: profile.board || profile.nickname || "Remembered serial device",
         confidence: "remembered",
         connected: false,
@@ -106,13 +112,39 @@ Panel {
     return merged
   }
 
-  function profileKey(device) {
+  function legacyProfileKey(device) {
     return device && (device.stablePath || device.id) ? (device.stablePath || device.id) : ""
   }
 
+  function profileKey(device) {
+    if (!device) return ""
+    return device.identityKey ? device.identityKey : legacyProfileKey(device)
+  }
+
   function profileFor(device) {
-    var profile = deviceProfiles[profileKey(device)]
-    return profile && typeof profile === "object" ? profile : {}
+    var key = profileKey(device)
+    var profile = key ? deviceProfiles[key] : undefined
+    if (profile && typeof profile === "object") return profile
+
+    // Old profiles used the connection path as identity. Reuse that mapping
+    // only when the scanner reports a USB serial identity. A topology-only
+    // device must not silently inherit an ambiguous legacy profile.
+    if (device && device.identityEvidence !== "usb-topology") {
+      var legacyKey = legacyProfileKey(device)
+      profile = legacyKey ? deviceProfiles[legacyKey] : undefined
+      if (profile && typeof profile === "object") return profile
+    }
+    return {}
+  }
+
+  function hasProfile(device) {
+    var key = profileKey(device)
+    if (key && deviceProfiles[key] !== undefined) return true
+    if (device && device.identityEvidence !== "usb-topology") {
+      var legacyKey = legacyProfileKey(device)
+      return legacyKey !== "" && deviceProfiles[legacyKey] !== undefined
+    }
+    return false
   }
 
   function effectiveBaud(device) {
@@ -143,6 +175,9 @@ Panel {
       dataFormat: effectiveDataFormat(device),
       sessionLogging: effectiveLogging(device),
       nickname: current.nickname || "",
+      identityKey: device.identityKey || current.identityKey || "",
+      identityEvidence: device.identityEvidence || current.identityEvidence || "",
+      identityPortBound: device.identityPortBound === true,
       board: device.board || current.board || "USB serial device",
       vendorId: device.vendorId || current.vendorId || "",
       productId: device.productId || current.productId || "",
@@ -271,6 +306,13 @@ Panel {
 
   function devicePath(device) {
     return device && device.stablePath ? device.stablePath : (device ? device.port : "")
+  }
+
+  function identityLabel(device) {
+    if (!device) return "NOT RECORDED"
+    if (device.identityEvidence === "usb-serial") return "USB SERIAL"
+    if (device.identityEvidence === "usb-topology") return "USB PORT"
+    return "NOT RECORDED"
   }
 
   function confidenceLabel(device) {
@@ -577,6 +619,12 @@ Panel {
                         || String(deviceColumn.modelData.mode || "USB").toUpperCase()
                     }
 
+                    CompactLabel { text: "DEVICE ID" }
+                    CompactValue {
+                      text: root.identityLabel(deviceColumn.modelData)
+                      Layout.columnSpan: 3
+                    }
+
                     CompactLabel { text: "LOCK" }
                     CompactValue {
                       text: !deviceColumn.modelData.serialAvailable ? "Not applicable"
@@ -611,19 +659,19 @@ Panel {
                       ProfilePill {
                         id: baudSelector
                         label: String(root.effectiveBaud(deviceColumn.modelData))
-                        active: root.deviceProfiles[root.profileKey(deviceColumn.modelData)] !== undefined
+                        active: root.hasProfile(deviceColumn.modelData)
                         tooltipText: active ? "Saved baud rate · click to change" : "Default baud rate · click to change"
                         onActivated: root.cycleDeviceBaud(deviceColumn.modelData)
                       }
                       ProfilePill {
                         label: root.effectiveLineEnding(deviceColumn.modelData).toUpperCase()
-                        active: root.deviceProfiles[root.profileKey(deviceColumn.modelData)] !== undefined
+                        active: root.hasProfile(deviceColumn.modelData)
                         tooltipText: "Line ending · click to cycle"
                         onActivated: root.cycleDeviceLineEnding(deviceColumn.modelData)
                       }
                       ProfilePill {
                         label: root.effectiveDataFormat(deviceColumn.modelData)
-                        active: root.deviceProfiles[root.profileKey(deviceColumn.modelData)] !== undefined
+                        active: root.hasProfile(deviceColumn.modelData)
                         tooltipText: "Serial format · click to cycle"
                         onActivated: root.cycleDeviceDataFormat(deviceColumn.modelData)
                       }

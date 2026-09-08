@@ -251,6 +251,19 @@ def usb_details(usb: Path, properties: dict[str, str] | None = None) -> dict[str
     }
 
 
+def device_identity(
+    vendor: str,
+    product: str,
+    serial: str,
+    topology: str,
+) -> tuple[str, str, bool]:
+    """Return a profile identity without treating a connection path as device proof."""
+
+    if serial:
+        return f"usb-serial:{vendor}:{product}:{serial}", "usb-serial", False
+    return f"usb-topology:{vendor}:{product}:{topology}", "usb-topology", True
+
+
 def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[str, object]:
     vendor = details["vendor"]
     product = details["product"]
@@ -260,8 +273,14 @@ def base_device(usb: Path, details: dict[str, str], has_serial: bool) -> dict[st
     known_mode = BOARD_IDS.get((vendor, product), ("", ""))[1]
     mode = known_mode or infer_mode(details["usb_product"], has_serial)
     serial = details["serial"]
+    identity_key, identity_evidence, identity_port_bound = device_identity(
+        vendor, product, serial, usb.name
+    )
     return {
         "id": serial or f"{vendor}:{product}:{usb.name}",
+        "identityKey": identity_key,
+        "identityEvidence": identity_evidence,
+        "identityPortBound": identity_port_bound,
         "board": board,
         "confidence": confidence,
         "identificationEvidence": identification_evidence,

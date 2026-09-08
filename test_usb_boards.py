@@ -181,11 +181,66 @@ class ScannerFixtureTests(unittest.TestCase):
             self.assertEqual(devices[0]["confidence"], "probable")
             self.assertEqual(devices[0].get("identificationEvidence"), "vendor")
 
+    def test_usb_serial_identity_is_not_port_bound(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = self.make_usb(root, "8-1", "10c4", "ea60", "Silicon Labs", "CP2102 USB to UART", "ABC123")
+            self.add_tty(root, usb, "ttyUSB0")
+
+            devices = self.fixture_scan(root)
+
+            self.assertEqual(devices[0].get("identityKey"), "usb-serial:10c4:ea60:ABC123")
+            self.assertEqual(devices[0].get("identityEvidence"), "usb-serial")
+            self.assertFalse(devices[0].get("identityPortBound"))
+
+    def test_device_without_usb_serial_uses_port_bound_topology_identity(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = self.make_usb(root, "2-1.2", "1a86", "7523", "QinHeng Electronics", "USB Serial")
+            self.add_tty(root, usb, "ttyUSB0")
+
+            devices = self.fixture_scan(root)
+
+            self.assertEqual(devices[0].get("identityKey"), "usb-topology:1a86:7523:2-1.2")
+            self.assertEqual(devices[0].get("identityEvidence"), "usb-topology")
+            self.assertTrue(devices[0].get("identityPortBound"))
+
+    def test_unlabelled_unknown_device_does_not_require_board_knowledge(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = self.make_usb(root, "9-3", "ffff", "1234", "", "")
+            self.add_tty(root, usb, "ttyUSB0")
+
+            devices = self.fixture_scan(root)
+
+            self.assertEqual(devices[0]["board"], "USB serial device")
+            self.assertEqual(devices[0]["confidence"], "unknown")
+            self.assertEqual(devices[0].get("identityEvidence"), "usb-topology")
+            self.assertTrue(devices[0].get("identityPortBound"))
+
     def test_unrelated_usb_device_without_tty_is_ignored(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             self.make_usb(root, "4-1", "046d", "c534", "Logitech", "USB Receiver")
             self.assertEqual(self.fixture_scan(root), [])
+
+
+class PanelIdentityContractTests(unittest.TestCase):
+    def panel_source(self):
+        return Path(__file__).with_name("Panel.qml").read_text()
+
+    def test_profile_key_prefers_scanner_identity_key(self):
+        source = self.panel_source()
+        self.assertIn("device.identityKey ? device.identityKey : legacyProfileKey(device)", source)
+
+    def test_port_bound_identity_does_not_reuse_legacy_profile(self):
+        source = self.panel_source()
+        self.assertIn('device.identityEvidence !== "usb-topology"', source)
+
+    def test_panel_explains_port_bound_identity(self):
+        source = self.panel_source()
+        self.assertIn('return "USB PORT"', source)
+
 
 
 class DeviceAccessTests(unittest.TestCase):
