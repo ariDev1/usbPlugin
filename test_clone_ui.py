@@ -36,10 +36,12 @@ class CloneUiLayoutContractTests(unittest.TestCase):
             normalized,
         )
 
-    def test_separators_are_compact_mode_only(self):
+    def test_separators_preserve_device_row_boundaries(self):
+        normalized = " ".join(self.source.split())
         self.assertIn(
-            "visible: !root.wideMode && deviceColumn.index > 0",
-            self.source,
+            "visible: deviceColumn.index > 0 "
+            "&& (!root.wideMode || deviceColumn.index >= 2)",
+            normalized,
         )
 
     def test_horizontal_scroll_remains_disabled(self):
@@ -213,6 +215,72 @@ class CloneUiSourceReadProgressContractTests(unittest.TestCase):
         self.assertIn("loops: Animation.Infinite", block)
         self.assertNotIn("value:", block)
         self.assertNotIn("%", block)
+
+
+class CloneUiVisualHierarchyContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def test_visual_state_tokens_are_explicit(self):
+        self.assertIn("readonly property color readyTone:", self.source)
+        self.assertIn("readonly property color warningTone:", self.source)
+        self.assertIn("readonly property color offlineTone:", self.source)
+        self.assertIn("readonly property color hairline:", self.source)
+
+    def test_device_status_uses_semantic_tone_function(self):
+        self.assertIn("function deviceStatusTone(device)", self.source)
+        self.assertIn(
+            "color: root.deviceStatusTone(deviceColumn.modelData)",
+            self.source,
+        )
+
+    def test_wide_grid_has_subtle_lower_row_separators(self):
+        normalized = " ".join(self.source.split())
+        self.assertIn(
+            "visible: deviceColumn.index > 0 "
+            "&& (!root.wideMode || deviceColumn.index >= 2)",
+            normalized,
+        )
+        self.assertIn("foreground: root.hairline", normalized)
+
+    def test_probe_reset_warning_is_contextual(self):
+        normalized = " ".join(self.source.split())
+        self.assertIn(
+            "visible: cloneActions.visible "
+            "&& root.isCloneSelected(deviceColumn.modelData)",
+            normalized,
+        )
+
+    def test_offline_metadata_is_deemphasized(self):
+        normalized = " ".join(self.source.split())
+        self.assertGreaterEqual(
+            normalized.count(
+                "opacity: deviceColumn.modelData.connected ? 1.0 : 0.45"
+            ),
+            2,
+        )
+
+    def test_metadata_labels_are_quieter_than_values(self):
+        label_start = self.source.find("component CompactLabel: Text")
+        value_start = self.source.find("component CompactValue: Text")
+        detail_start = self.source.find("component DetailLine: Item")
+        self.assertGreaterEqual(label_start, 0)
+        self.assertGreater(value_start, label_start)
+        self.assertGreater(detail_start, value_start)
+
+        label_block = self.source[label_start:value_start]
+        value_block = self.source[value_start:detail_start]
+        self.assertIn("opacity: 0.45", label_block)
+        self.assertIn("opacity: urgent ? 1.0 : 0.92", value_block)
+
+    def test_controls_and_grid_use_refined_spacing(self):
+        normalized = " ".join(self.source.split())
+        self.assertIn("rowSpacing: Style.space(14)", normalized)
+        self.assertIn(
+            "border.color: active ? root.bar.foreground : root.hairline",
+            normalized,
+        )
 
 
 if __name__ == "__main__":

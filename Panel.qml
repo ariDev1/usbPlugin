@@ -49,6 +49,20 @@ Panel {
     return device.connected && device.serialAvailable && (!device.readable || !device.writable)
   })
 
+  readonly property color readyTone: Qt.rgba(0.48, 0.78, 0.52, 1.0)
+  readonly property color warningTone: Qt.rgba(0.90, 0.68, 0.34, 1.0)
+  readonly property color offlineTone: root.bar
+    ? root.bar.urgent
+    : Qt.rgba(0.88, 0.38, 0.34, 1.0)
+  readonly property color hairline: root.bar
+    ? Qt.rgba(
+        root.bar.foreground.r,
+        root.bar.foreground.g,
+        root.bar.foreground.b,
+        0.18
+      )
+    : Qt.rgba(1, 1, 1, 0.12)
+
   readonly property string manifestPath: {
     var url = Qt.resolvedUrl("manifest.json").toString()
     return url.indexOf("file://") === 0 ? decodeURIComponent(url.substring(7)) : url
@@ -199,6 +213,16 @@ Panel {
     if (!device.readable || !device.writable) return "PERMISSION NEEDED"
     if (device.locked) return "PORT IN USE"
     return "READY"
+  }
+
+  function deviceStatusTone(device) {
+    if (!device || !device.connected) return root.offlineTone
+    if (!device.serialAvailable
+        || !device.readable
+        || !device.writable
+        || device.locked)
+      return root.warningTone
+    return root.readyTone
   }
 
   function cloneIdentityKey(device) {
@@ -718,7 +742,10 @@ Panel {
               Text {
                 text: root.accessRequired ? "PERMISSION REQUIRED"
                   : (root.connectedDevices.length > 0 ? "DEVICES READY" : "SAVED DEVICES OFFLINE")
-                color: root.accessRequired ? root.bar.urgent : Qt.darker(root.bar.foreground, 1.4)
+                color: root.accessRequired
+                  ? root.warningTone
+                  : (root.connectedDevices.length > 0
+                    ? root.readyTone : root.offlineTone)
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -742,7 +769,7 @@ Panel {
             width: parent.width
             columns: root.wideMode ? 2 : 1
             columnSpacing: Style.space(12)
-            rowSpacing: Style.space(12)
+            rowSpacing: Style.space(14)
 
             Repeater {
               model: root.devices
@@ -757,9 +784,10 @@ Panel {
                 spacing: Style.space(8)
 
                 PanelSeparator {
-                  visible: !root.wideMode && deviceColumn.index > 0
-                foreground: root.bar.foreground
-              }
+                  visible: deviceColumn.index > 0
+                    && (!root.wideMode || deviceColumn.index >= 2)
+                  foreground: root.hairline
+                }
 
               CursorSurface {
                 id: deviceRow
@@ -788,6 +816,7 @@ Panel {
                       visible: !nameField.visible
                       text: root.displayName(deviceColumn.modelData)
                       color: root.bar.foreground
+                      opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.subtitle
                       font.bold: true
@@ -811,9 +840,10 @@ Panel {
                   }
                   Text {
                     text: root.deviceStatus(deviceColumn.modelData) + " · " + root.confidenceLabel(deviceColumn.modelData)
-                    color: deviceColumn.modelData.readable && deviceColumn.modelData.writable
-                      ? root.bar.foreground : root.bar.urgent
-                    opacity: deviceColumn.modelData.readable && deviceColumn.modelData.writable ? 0.6 : 1.0
+                    color: root.deviceStatusTone(deviceColumn.modelData)
+                    opacity: deviceColumn.modelData.connected
+                      && deviceColumn.modelData.readable
+                      && deviceColumn.modelData.writable ? 0.78 : 1.0
                     font.family: root.bar.fontFamily
                     font.pixelSize: Style.font.caption
                     font.bold: true
@@ -866,6 +896,7 @@ Panel {
 
                   Text {
                     visible: cloneActions.visible
+                      && root.isCloneSelected(deviceColumn.modelData)
                     text: "PROBE RESETS BOARD"
                     color: root.bar.urgent
                     font.family: root.bar.fontFamily
@@ -1045,6 +1076,7 @@ Panel {
                   Row {
                     id: deviceActions
                     spacing: Style.space(5)
+                    opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
 
                     PanelActionButton {
                       iconText: root.renamingKey === root.profileKey(deviceColumn.modelData) ? "󰄬" : "󰏫"
@@ -1105,6 +1137,7 @@ Panel {
                   GridLayout {
                     id: deviceDetails
                     width: parent.width
+                    opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
                     columns: 4
                     columnSpacing: Style.space(12)
                     rowSpacing: Style.space(2)
@@ -1267,7 +1300,7 @@ Panel {
     radius: 0
     color: active ? Qt.rgba(1, 1, 1, 0.10) : "transparent"
     border.width: 1
-    border.color: active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.35)
+    border.color: active ? root.bar.foreground : root.hairline
     opacity: enabled ? 1.0 : 0.35
 
     Text {
@@ -1275,6 +1308,7 @@ Panel {
       anchors.centerIn: parent
       text: parent.label
       color: root.bar.foreground
+      opacity: parent.active ? 1.0 : 0.78
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.caption
       font.bold: parent.active
@@ -1305,13 +1339,14 @@ Panel {
     radius: 0
     color: active ? Qt.rgba(1, 1, 1, 0.10) : "transparent"
     border.width: 1
-    border.color: active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.35)
+    border.color: active ? root.bar.foreground : root.hairline
 
     Text {
       id: profileText
       anchors.centerIn: parent
       text: parent.label
       color: root.bar.foreground
+      opacity: parent.active ? 1.0 : 0.78
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.caption
       font.bold: parent.active
@@ -1332,7 +1367,7 @@ Panel {
 
   component CompactLabel: Text {
     color: root.bar.foreground
-    opacity: 0.6
+    opacity: 0.45
     font.family: root.bar.fontFamily
     font.pixelSize: Style.font.bodySmall
     Layout.alignment: Qt.AlignVCenter
@@ -1341,6 +1376,7 @@ Panel {
   component CompactValue: Text {
     property bool urgent: false
     color: urgent ? root.bar.urgent : root.bar.foreground
+    opacity: urgent ? 1.0 : 0.92
     font.family: root.bar.fontFamily
     font.pixelSize: Style.font.bodySmall
     horizontalAlignment: Text.AlignRight
@@ -1361,7 +1397,7 @@ Panel {
       id: detailLabel
       text: parent.label
       color: root.bar.foreground
-      opacity: 0.6
+      opacity: 0.45
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.bodySmall
       anchors.left: parent.left
@@ -1372,6 +1408,7 @@ Panel {
       id: detailValue
       text: parent.value
       color: parent.urgent ? root.bar.urgent : root.bar.foreground
+      opacity: parent.urgent ? 1.0 : 0.92
       font.family: root.bar.fontFamily
       font.pixelSize: Style.font.bodySmall
       anchors.left: detailLabel.right
