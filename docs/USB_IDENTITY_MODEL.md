@@ -179,6 +179,64 @@ Migration is deterministic and idempotent. Repeating it with the same inputs pro
 
 Do not use `migrationEvidence` to construct an identity key. Do not use `identityEvidence` alone as proof that legacy profile data should be copied.
 
+## Active Clone Evidence
+
+USB identity evidence and active clone evidence are separate.
+
+The passive scanner remains the authority for USB detection and physical identity.
+For example, a CH340/CH341 bridge can remain `bridge-only` and `BOARD UNKNOWN`
+even when a later active Espressif ROM probe identifies an ESP32 behind that
+bridge. Active evidence does not rewrite `board`, `confidence`,
+`identificationEvidence`, or `identificationScope`.
+
+An active clone probe can observe silicon and flash properties that passive USB
+enumeration cannot prove. Current read-only probe evidence can include the SoC
+model and revision, chip MAC, crystal frequency, flash JEDEC identity, flash
+capacity, flash voltage, flash-encryption state, secure-boot state, UART
+download state, and relevant eFuse read/write-disable masks.
+
+Active probe evidence is operation state. It is not stored in
+`ProfileStore.js`. SOURCE and TARGET selections are also runtime-only. They use
+`identityKey`, require a currently connected device, and cannot refer to the
+same identity at the same time.
+
+`/dev/ttyUSBx`, `/dev/ttyACMx`, and stable `/dev/serial/...` paths remain
+connection paths. They are not promoted to physical identity evidence by clone
+operations.
+
+During one active transaction, USB Boards uses the scanner identity plus
+`sysPath` and the USB device number (`devnum`) as continuity evidence. This
+continuity check is local to that transaction. It is not a persistent identity
+scheme.
+
+Espressif ROM probing resets the target MCU. The UI therefore starts probing
+and source reads only after an explicit operator action and states that the
+operation resets the board.
+
+Raw source images are temporary private data. The clone backend creates them
+under:
+
+```text
+${XDG_RUNTIME_DIR}/omarchy/usb-boards/clone/<transaction-id>/
+```
+
+The transaction directory is owner-only (`0700`) and the raw image is
+owner-only (`0600`). A completed source read reports metadata such as exact
+image size and SHA-256. The temporary raw image is then removed.
+
+eFuses are evidence only in the current architecture. USB Boards can read
+security state for compatibility decisions. It does not copy, burn, or modify
+eFuses as part of a normal clone operation.
+
+The current implementation boundary is explicit:
+
+```text
+SOURCE READ: IMPLEMENTED
+TARGET WRITE: NOT IMPLEMENTED
+TARGET VERIFY: NOT IMPLEMENTED
+CLONE PASS: NOT CLAIMED
+```
+
 ## Fail-Closed Behavior
 Invalid JSON fails closed. An unsupported schema version fails closed. An invalid store shape fails closed.
 
