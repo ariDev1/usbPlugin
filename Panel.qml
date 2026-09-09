@@ -88,9 +88,32 @@ Panel {
 
   readonly property bool offlineVisible:
     root.connectedPanelDevices.length === 0 || root.offlineFoldOpen
+
+  readonly property var workbenchNavigationDevices: {
+    var out = []
+    if (root.workbenchLeftDevice !== null)
+      out.push(root.workbenchLeftDevice)
+    if (root.workbenchRightDevice !== null)
+      out.push(root.workbenchRightDevice)
+    return out
+  }
+
+  readonly property int rackNavigationOffset:
+    root.workbenchNavigationDevices.length
+
+  readonly property int offlineNavigationOffset:
+    root.workbenchNavigationDevices.length + root.rackDevices.length
+
+  readonly property var navigationDevices: {
+    var out = root.workbenchNavigationDevices.concat(root.rackDevices)
+    if (root.offlineVisible)
+      out = out.concat(root.offlinePanelDevices)
+    return out
+  }
+
   readonly property int navigationDeviceCount:
-    root.connectedPanelDevices.length
-      + (root.offlineVisible ? root.offlinePanelDevices.length : 0)
+    root.navigationDevices.length
+
   readonly property bool wideMode: root.navigationDeviceCount >= 2
 
   readonly property bool accessRequired: devices.some(function(device) {
@@ -729,17 +752,7 @@ Panel {
 
   function navigationDeviceAt(index) {
     if (index < 0 || index >= root.navigationDeviceCount) return null
-
-    if (index < root.connectedPanelDevices.length)
-      return root.connectedPanelDevices[index]
-
-    var offlineIndex = index - root.connectedPanelDevices.length
-    if (!root.offlineVisible
-        || offlineIndex < 0
-        || offlineIndex >= root.offlinePanelDevices.length)
-      return null
-
-    return root.offlinePanelDevices[offlineIndex]
+    return root.navigationDevices[index]
   }
 
   function selectByDelta(delta) {
@@ -1126,11 +1139,17 @@ Panel {
     readonly property string cloneRole:
       root.workbenchCloneRole(modelData)
 
+    readonly property int navigationIndex:
+      root.rackNavigationOffset + index
+
     width: parent ? parent.width : 0
     height: rackBody.implicitHeight + Style.space(12)
     color: "transparent"
     border.width: 1
-    border.color: root.hairline
+    border.color: root.cursorActive
+      && root.selectedIndex === rackRow.navigationIndex
+      ? root.bar.foreground
+      : root.hairline
     radius: 0
 
     RowLayout {
@@ -1751,7 +1770,7 @@ Panel {
     required property int index
 
     readonly property int navigationIndex:
-      root.connectedPanelDevices.length + index
+      root.offlineNavigationOffset + index
     readonly property bool detailsOpen:
       root.expandedOfflineKey === root.profileKey(modelData)
 

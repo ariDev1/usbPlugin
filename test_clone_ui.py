@@ -723,5 +723,107 @@ class CloneUiConnectedRackContractTests(unittest.TestCase):
         self.assertNotIn("id: deviceDetails", block)
 
 
+class CloneUiWorkbenchNavigationContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def component_block(self, name, next_name):
+        start = self.source.find("component " + name + ":")
+        if start < 0:
+            return ""
+        end = self.source.find("component " + next_name + ":", start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_navigation_model_follows_visible_presentation_order(self):
+        self.assertIn(
+            "readonly property var navigationDevices:",
+            self.source,
+        )
+        self.assertIn(
+            "root.workbenchNavigationDevices.concat(root.rackDevices)",
+            self.normalized,
+        )
+        self.assertIn(
+            "root.offlineVisible",
+            self.normalized,
+        )
+        self.assertIn(
+            "root.offlinePanelDevices",
+            self.normalized,
+        )
+
+    def test_navigation_count_uses_navigation_model(self):
+        self.assertIn(
+            "readonly property int navigationDeviceCount:",
+            self.source,
+        )
+        self.assertIn(
+            "root.navigationDevices.length",
+            self.normalized,
+        )
+
+    def test_navigation_lookup_uses_navigation_model(self):
+        start = self.source.find("function navigationDeviceAt(index)")
+        end = self.source.find("function selectByDelta(delta)", start)
+        self.assertGreaterEqual(start, 0)
+        self.assertGreater(end, start)
+
+        block = self.source[start:end]
+        self.assertIn(
+            "return root.navigationDevices[index]",
+            block,
+        )
+        self.assertNotIn(
+            "root.connectedPanelDevices[index]",
+            block,
+        )
+
+    def test_rack_navigation_starts_after_visible_workbench_devices(self):
+        self.assertIn(
+            "readonly property int rackNavigationOffset:",
+            self.source,
+        )
+
+        block = self.component_block(
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+        )
+        self.assertIn(
+            "readonly property int navigationIndex:",
+            block,
+        )
+        self.assertIn(
+            "root.rackNavigationOffset + index",
+            block,
+        )
+
+    def test_rack_row_has_visible_keyboard_selection(self):
+        block = self.component_block(
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+        )
+        self.assertIn(
+            "root.selectedIndex === rackRow.navigationIndex",
+            block,
+        )
+
+    def test_offline_navigation_starts_after_visible_connected_devices(self):
+        self.assertIn(
+            "readonly property int offlineNavigationOffset:",
+            self.source,
+        )
+
+        block = self.component_block(
+            "OfflineDeviceRow",
+            "CloneActionButton",
+        )
+        self.assertIn(
+            "root.offlineNavigationOffset + index",
+            block,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
