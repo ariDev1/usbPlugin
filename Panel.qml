@@ -19,6 +19,12 @@ Panel {
   property bool cursorActive: false
   property int selectedIndex: 0
   property string renamingKey: ""
+  property string cloneSourceKey: ""
+  property string cloneTargetKey: ""
+  property string cloneProbeKey: ""
+  property bool cloneProbeBusy: false
+  property var cloneProbeResults: ({})
+  property var cloneProbeErrors: ({})
   readonly property bool wideMode: root.devices.length >= 2
   readonly property int compactPanelWidth: Style.space(380)
   readonly property int widePanelWidth: Style.space(760)
@@ -54,6 +60,11 @@ Panel {
     return url.indexOf("file://") === 0 ? decodeURIComponent(url.substring(7)) : url
   }
 
+  readonly property string cloneBackendPath: {
+    var url = Qt.resolvedUrl("usb_clone.py").toString()
+    return url.indexOf("file://") === 0 ? decodeURIComponent(url.substring(7)) : url
+  }
+
   function updatePluginVersion(raw) {
     try {
       var parsed = JSON.parse(String(raw || "{}"))
@@ -73,6 +84,7 @@ Panel {
       connectedDevices = Array.isArray(parsed) ? parsed : []
       scanError = ""
       migrateProfiles(connectedDevices)
+      reconcileCloneState(connectedDevices)
       if (selectedIndex >= devices.length) selectedIndex = Math.max(0, devices.length - 1)
     } catch (error) {
       scanError = "Could not read USB device information"
@@ -183,6 +195,153 @@ Panel {
     if (!device.readable || !device.writable) return "PERMISSION NEEDED"
     if (device.locked) return "PORT IN USE"
     return "READY"
+  }
+
+  function cloneIdentityKey(device) {
+    if (!device || !device.connected) return ""
+    return String(device.identityKey || "")
+  }
+
+  function isCloneSelected(device) {
+    var key = root.cloneIdentityKey(device)
+    return key !== "" && (key === root.cloneSourceKey || key === root.cloneTargetKey)
+  }
+
+  function canSelectCloneSource(device) {
+    var key = root.cloneIdentityKey(device)
+    return key !== "" && key !== root.cloneTargetKey
+  }
+
+  function canSelectCloneTarget(device) {
+    var key = root.cloneIdentityKey(device)
+    return key !== "" && key !== root.cloneSourceKey
+  }
+
+  function toggleCloneSource(device) {
+    var key = root.cloneIdentityKey(device)
+    if (key === "" || !root.canSelectCloneSource(device)) return
+    root.cloneSourceKey = root.cloneSourceKey === key ? "" : key
+  }
+
+  function toggleCloneTarget(device) {
+    var key = root.cloneIdentityKey(device)
+    if (key === "" || !root.canSelectCloneTarget(device)) return
+    root.cloneTargetKey = root.cloneTargetKey === key ? "" : key
+  }
+
+  function cloneProbeEligible(device) {
+    if (!root.isCloneSelected(device)) return false
+    return device.connected
+      && device.serialAvailable
+      && device.readable
+      && device.writable
+      && !device.locked
+  }
+
+  function cloneProbeResultFor(device) {
+    var key = String(device && device.identityKey || "")
+    return key !== "" && root.cloneProbeResults[key] ? root.cloneProbeResults[key] : null
+  }
+
+  function cloneProbeErrorFor(device) {
+    var key = String(device && device.identityKey || "")
+    return key !== "" ? String(root.cloneProbeErrors[key] || "") : ""
+  }
+
+  function setCloneProbeEvidence(key, probe, errorText) {
+    var results = {}
+    var errors = {}
+    var name
+    for (name in root.cloneProbeResults) {
+      if (name !== key) results[name] = root.cloneProbeResults[name]
+    }
+    for (name in root.cloneProbeErrors) {
+      if (name !== key) errors[name] = root.cloneProbeErrors[name]
+    }
+    if (probe) results[key] = probe
+    if (errorText) errors[key] = String(errorText)
+    root.cloneProbeResults = results
+    root.cloneProbeErrors = errors
+  }
+
+  function reconcileCloneState(scannedDevices) {
+    var connected = {}
+    var list = scannedDevices || []
+    for (var index = 0; index < list.length; index++) {
+      var device = list[index]
+      var key = device && device.connected ? String(device.identityKey || "") : ""
+      if (key !== "") connected[key] = true
+    }
+
+    if (root.cloneSourceKey !== "" && !connected[root.cloneSourceKey])
+      root.cloneSourceKey = ""
+    if (root.cloneTargetKey !== "" && !connected[root.cloneTargetKey])
+      root.cloneTargetKey = ""
+
+    var results = {}
+    var errors = {}
+    var name
+    for (name in root.cloneProbeResults) {
+      if (connected[name]) results[name] = root.cloneProbeResults[name]
+    }
+    for (name in root.cloneProbeErrors) {
+      if (connected[name]) errors[name] = root.cloneProbeErrors[name]
+    }
+    root.cloneProbeResults = results
+    root.cloneProbeErrors = errors
+
+    if (root.cloneProbeKey !== "" && !connected[root.cloneProbeKey]) {
+      if (cloneProbeProc.running) cloneProbeProc.running = false
+      root.cloneProbeKey = ""
+      root.cloneProbeBusy = false
+    }
+  }
+
+  function startCloneProbe(device) {
+    var key = root.cloneIdentityKey(device)
+    if (key === "" || root.cloneProbeBusy || !root.cloneProbeEligible(device)) return
+    root.setCloneProbeEvidence(key, null, "")
+    root.cloneProbeKey = key
+    root.cloneProbeBusy = true
+    cloneProbeProc.command = ["python3", root.cloneBackendPath, "probe", "--identity-key", key]
+    cloneProbeProc.running = true
+  }
+
+  function finishCloneProbe(raw) {
+    var key = root.cloneProbeKey
+    if (key === "") return
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+      if (!parsed || parsed.operation !== "probe") throw new Error("invalid operation")
+      if (parsed.status === "pass") {
+        if (String(parsed.identityKey || "") !== key || !parsed.probe || parsed.probe.ok !== true)
+          throw new Error("identity mismatch")
+        root.setCloneProbeEvidence(key, parsed.probe, "")
+      } else {
+        root.setCloneProbeEvidence(key, null, String(parsed.reason || "probe-failed"))
+      }
+    } catch (error) {
+      root.setCloneProbeEvidence(key, null, "invalid-probe-result")
+    }
+    root.cloneProbeKey = ""
+    root.cloneProbeBusy = false
+  }
+
+  function cloneProbeDeviceLabel(probe) {
+    if (!probe) return ""
+    var model = String(probe.chipModel || "UNKNOWN ESPRESSIF DEVICE")
+    var revision = String(probe.chipRevision || "")
+    return revision === "" ? model : model + " · " + revision
+  }
+
+  function cloneProbeFlashLabel(probe) {
+    if (!probe) return ""
+    var size = Number(probe.flashSize || 0)
+    var sizeLabel = size > 0 && size % (1024 * 1024) === 0
+      ? String(size / (1024 * 1024)) + " MiB"
+      : (size > 0 ? String(size) + " B" : "FLASH SIZE UNKNOWN")
+    var voltage = String(probe.flashVoltage || "")
+    return voltage === "" ? sizeLabel : sizeLabel + " · " + voltage
   }
 
   function setDeviceBaud(device, baud) {
@@ -354,6 +513,18 @@ Panel {
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: if (String(text || "").trim() !== "") root.scanError = String(text).trim()
+    }
+  }
+
+  Process {
+    id: cloneProbeProc
+    command: []
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.finishCloneProbe(text)
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
     }
   }
 
@@ -551,6 +722,126 @@ Panel {
                     font.bold: true
                     font.letterSpacing: 1.0
                   }
+
+                  Row {
+                    id: cloneActions
+                    visible: deviceColumn.modelData.connected
+                    spacing: Style.space(5)
+
+                    CloneActionButton {
+                      label: "SOURCE"
+                      active: root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
+                      enabled: root.canSelectCloneSource(deviceColumn.modelData)
+                      tooltipText: active ? "Clear SOURCE role" : "Select this connected device as SOURCE"
+                      onActivated: root.toggleCloneSource(deviceColumn.modelData)
+                    }
+
+                    CloneActionButton {
+                      label: "TARGET"
+                      active: root.cloneTargetKey === root.cloneIdentityKey(deviceColumn.modelData)
+                      enabled: root.canSelectCloneTarget(deviceColumn.modelData)
+                      tooltipText: active ? "Clear TARGET role" : "Select this connected device as TARGET"
+                      onActivated: root.toggleCloneTarget(deviceColumn.modelData)
+                    }
+
+                    CloneActionButton {
+                      label: root.cloneProbeBusy
+                        && root.cloneProbeKey === root.cloneIdentityKey(deviceColumn.modelData)
+                        ? "PROBING" : "PROBE"
+                      enabled: !root.cloneProbeBusy && root.cloneProbeEligible(deviceColumn.modelData)
+                      tooltipText: root.isCloneSelected(deviceColumn.modelData)
+                        ? "Probe selected device · board resets"
+                        : "Select SOURCE or TARGET first"
+                      onActivated: root.startCloneProbe(deviceColumn.modelData)
+                    }
+                  }
+
+                  Text {
+                    visible: cloneActions.visible
+                    text: "PROBE RESETS BOARD"
+                    color: root.bar.urgent
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1.0
+                  }
+
+                  Column {
+                    id: cloneEvidence
+                    width: parent.width
+                    spacing: Style.space(1)
+                    readonly property var evidence: root.cloneProbeResultFor(deviceColumn.modelData)
+                    readonly property string probeError: root.cloneProbeErrorFor(deviceColumn.modelData)
+                    readonly property string identityKey: String(deviceColumn.modelData.identityKey || "")
+                    visible: evidence !== null
+                      || probeError !== ""
+                      || root.cloneSourceKey === identityKey
+                      || root.cloneTargetKey === identityKey
+                      || (root.cloneProbeBusy && root.cloneProbeKey === identityKey)
+
+                    Text {
+                      visible: root.cloneProbeBusy && root.cloneProbeKey === cloneEvidence.identityKey
+                      text: "ACTIVE PROBE · RUNNING"
+                      color: root.bar.foreground
+                      opacity: 0.65
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+
+                    Text {
+                      visible: cloneEvidence.probeError !== ""
+                      text: "ACTIVE PROBE FAILED · " + cloneEvidence.probeError
+                      color: root.bar.urgent
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      elide: Text.ElideRight
+                      width: parent.width
+                    }
+
+                    Text {
+                      visible: cloneEvidence.evidence !== null
+                      text: "ACTIVE PROBE · " + root.cloneProbeDeviceLabel(cloneEvidence.evidence)
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: true
+                      elide: Text.ElideRight
+                      width: parent.width
+                    }
+
+                    Text {
+                      visible: cloneEvidence.evidence !== null
+                      text: root.cloneProbeFlashLabel(cloneEvidence.evidence)
+                      color: root.bar.foreground
+                      opacity: 0.65
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Text {
+                      visible: cloneEvidence.evidence !== null
+                        && root.cloneSourceKey === cloneEvidence.identityKey
+                      text: "SOURCE PROBE PASS"
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      font.letterSpacing: 1.0
+                    }
+
+                    Text {
+                      visible: root.cloneTargetKey === cloneEvidence.identityKey
+                      text: "TARGET WRITE LOCKED"
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      font.letterSpacing: 1.0
+                    }
+                  }
+
                   Row {
                     id: deviceActions
                     spacing: Style.space(5)
@@ -763,6 +1054,44 @@ Panel {
         }
       }
     }
+  }
+
+  component CloneActionButton: Rectangle {
+    property string label: ""
+    property bool active: false
+    property string tooltipText: ""
+    signal activated()
+
+    width: Math.max(Style.space(72), cloneActionText.implicitWidth + Style.space(18))
+    height: Style.space(24)
+    radius: 0
+    color: active ? Qt.rgba(1, 1, 1, 0.10) : "transparent"
+    border.width: 1
+    border.color: active ? root.bar.foreground : Qt.darker(root.bar.foreground, 1.35)
+    opacity: enabled ? 1.0 : 0.35
+
+    Text {
+      id: cloneActionText
+      anchors.centerIn: parent
+      text: parent.label
+      color: root.bar.foreground
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: parent.active
+    }
+
+    MouseArea {
+      id: cloneActionMouse
+      anchors.fill: parent
+      enabled: parent.enabled
+      cursorShape: parent.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+      hoverEnabled: true
+      onClicked: parent.activated()
+    }
+
+    ToolTip.visible: cloneActionMouse.containsMouse && tooltipText !== ""
+    ToolTip.text: tooltipText
+    ToolTip.delay: 500
   }
 
   component ProfilePill: Rectangle {
