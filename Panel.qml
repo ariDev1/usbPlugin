@@ -29,7 +29,8 @@ Panel {
   property bool cloneReadBusy: false
   property var cloneReadResult: null
   property string cloneReadError: ""
-  readonly property bool wideMode: root.devices.length >= 2
+  property bool offlineFoldOpen: false
+  property string expandedOfflineKey: ""
   readonly property int compactPanelWidth: Style.space(380)
   readonly property int widePanelWidth: Style.space(760)
   readonly property int compactPanelHeight: Style.space(600)
@@ -45,6 +46,19 @@ Panel {
   readonly property var profileStore: profileStoreResult.ok
     ? profileStoreResult.store : ProfileStore.emptyStore()
   readonly property var devices: ProfileStore.projectDevices(connectedDevices, profileStore)
+  readonly property var connectedPanelDevices: devices.filter(function(device) {
+    return device.connected
+  })
+  readonly property var offlinePanelDevices: devices.filter(function(device) {
+    return !device.connected
+  })
+  readonly property bool offlineVisible:
+    root.connectedPanelDevices.length === 0 || root.offlineFoldOpen
+  readonly property int navigationDeviceCount:
+    root.connectedPanelDevices.length
+      + (root.offlineVisible ? root.offlinePanelDevices.length : 0)
+  readonly property bool wideMode: root.navigationDeviceCount >= 2
+
   readonly property bool accessRequired: devices.some(function(device) {
     return device.connected && device.serialAvailable && (!device.readable || !device.writable)
   })
@@ -103,7 +117,8 @@ Panel {
       scanError = ""
       migrateProfiles(connectedDevices)
       reconcileCloneState(connectedDevices)
-      if (selectedIndex >= devices.length) selectedIndex = Math.max(0, devices.length - 1)
+      if (selectedIndex >= root.navigationDeviceCount)
+        selectedIndex = Math.max(0, root.navigationDeviceCount - 1)
     } catch (error) {
       scanError = "Could not read USB device information"
     }
@@ -583,9 +598,46 @@ Panel {
     return "USB SERIAL DEVICE"
   }
 
+  function navigationDeviceAt(index) {
+    if (index < 0 || index >= root.navigationDeviceCount) return null
+
+    if (index < root.connectedPanelDevices.length)
+      return root.connectedPanelDevices[index]
+
+    var offlineIndex = index - root.connectedPanelDevices.length
+    if (!root.offlineVisible
+        || offlineIndex < 0
+        || offlineIndex >= root.offlinePanelDevices.length)
+      return null
+
+    return root.offlinePanelDevices[offlineIndex]
+  }
+
   function selectByDelta(delta) {
-    if (devices.length === 0) return
-    selectedIndex = Math.max(0, Math.min(devices.length - 1, selectedIndex + delta))
+    if (root.navigationDeviceCount === 0) return
+    selectedIndex = Math.max(
+      0,
+      Math.min(root.navigationDeviceCount - 1, selectedIndex + delta)
+    )
+  }
+
+  function setOfflineFoldOpen(open) {
+    root.offlineFoldOpen = open === true
+
+    if (!root.offlineFoldOpen && root.connectedPanelDevices.length > 0)
+      root.expandedOfflineKey = ""
+
+    if (root.navigationDeviceCount === 0) {
+      root.selectedIndex = 0
+    } else if (root.selectedIndex >= root.navigationDeviceCount) {
+      root.selectedIndex = root.navigationDeviceCount - 1
+    }
+  }
+
+  function toggleOfflineDetails(device) {
+    var key = root.profileKey(device)
+    if (key === "") return
+    root.expandedOfflineKey = root.expandedOfflineKey === key ? "" : key
   }
 
   IpcHandler {
@@ -691,15 +743,18 @@ Panel {
         if (dy !== 0) root.selectByDelta(dy)
       }
       onActivateRequested: {
-        if (root.cursorActive && root.selectedIndex < root.devices.length)
-          root.copy(root.devicePath(root.devices[root.selectedIndex]))
+        if (!root.cursorActive) return
+        var device = root.navigationDeviceAt(root.selectedIndex)
+        if (device) root.copy(root.devicePath(device))
       }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) { if (text === "r" || text === "R") root.refresh() }
 
       ScrollView {
+        id: deviceScroll
         anchors.fill: parent
+        contentWidth: availableWidth
         clip: true
         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
 
@@ -732,8 +787,8 @@ Panel {
 
               Text {
                 text: root.connectedDevices.length + " connected"
-                  + (root.devices.length > root.connectedDevices.length
-                    ? " · " + (root.devices.length - root.connectedDevices.length) + " offline" : "")
+                  + (root.offlinePanelDevices.length > 0
+                    ? " · " + root.offlinePanelDevices.length + " offline" : "")
                 color: root.bar.foreground
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.title
@@ -772,7 +827,7 @@ Panel {
             rowSpacing: Style.space(14)
 
             Repeater {
-              model: root.devices
+              model: root.connectedPanelDevices
 
               Column {
                 id: deviceColumn
@@ -1255,6 +1310,68 @@ Panel {
           }
           }
 
+          Column {
+            id: offlineSection
+            visible: root.offlinePanelDevices.length > 0
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator {
+              width: parent.width
+              foreground: root.hairline
+            }
+
+            Item {
+              id: offlineHeader
+              width: parent.width
+              implicitHeight: Math.max(
+                offlineHeaderText.implicitHeight,
+                offlineFoldButton.visible ? offlineFoldButton.implicitHeight : 0
+              )
+
+              Text {
+                id: offlineHeaderText
+                text: "REMEMBERED OFFLINE DEVICES · "
+                  + root.offlinePanelDevices.length
+                color: root.bar.foreground
+                opacity: 0.58
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.0
+                anchors.left: parent.left
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              CloneActionButton {
+                id: offlineFoldButton
+                visible: root.connectedPanelDevices.length > 0
+                label: root.offlineFoldOpen ? "HIDE" : "SHOW"
+                active: root.offlineFoldOpen
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                tooltipText: root.offlineFoldOpen
+                  ? "Hide remembered offline devices"
+                  : "Show remembered offline devices"
+                onActivated: root.setOfflineFoldOpen(!root.offlineFoldOpen)
+              }
+            }
+
+            Column {
+              visible: root.offlineVisible
+              width: parent.width
+              spacing: Style.space(4)
+
+              Repeater {
+                model: root.offlinePanelDevices
+
+                OfflineDeviceRow {
+                  width: parent.width
+                }
+              }
+            }
+          }
+
           Item {
             width: parent.width
             implicitHeight: defaultsFooter.implicitHeight
@@ -1286,6 +1403,203 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  component OfflineDeviceRow: CursorSurface {
+    required property var modelData
+    required property int index
+
+    readonly property int navigationIndex:
+      root.connectedPanelDevices.length + index
+    readonly property bool detailsOpen:
+      root.expandedOfflineKey === root.profileKey(modelData)
+
+    width: parent ? parent.width : 0
+    implicitHeight: offlineBody.implicitHeight + Style.space(12)
+    hasCursor: root.cursorActive && root.selectedIndex === navigationIndex
+    foreground: root.bar.foreground
+    outline: false
+    radius: 0
+    opacity: 0.72
+
+    Column {
+      id: offlineBody
+      z: 1
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.margins: Style.space(6)
+      spacing: Style.space(3)
+
+      Item {
+        width: parent.width
+        implicitHeight: Math.max(
+          offlineName.visible
+            ? offlineName.implicitHeight
+            : offlineNameField.implicitHeight,
+          offlineDetailsHint.implicitHeight
+        )
+
+        Text {
+          id: offlineName
+          visible: !offlineNameField.visible
+          text: root.displayName(modelData)
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+          elide: Text.ElideRight
+          anchors.left: parent.left
+          anchors.right: offlineDetailsHint.left
+          anchors.rightMargin: Style.space(10)
+          anchors.verticalCenter: parent.verticalCenter
+        }
+
+        TextField {
+          id: offlineNameField
+          visible: root.renamingKey === root.profileKey(modelData)
+          text: root.displayName(modelData)
+          placeholderText: "Device name"
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          foreground: root.bar.foreground
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(3)
+          anchors.left: parent.left
+          anchors.right: offlineDetailsHint.left
+          anchors.rightMargin: Style.space(10)
+          onAccepted: root.saveNickname(modelData, text)
+        }
+
+        Text {
+          id: offlineDetailsHint
+          text: detailsOpen ? "LESS" : "DETAILS"
+          color: root.bar.foreground
+          opacity: 0.55
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          anchors.right: parent.right
+          anchors.verticalCenter: parent.verticalCenter
+        }
+      }
+
+      Text {
+        text: root.deviceStatus(modelData) + " · " + root.confidenceLabel(modelData)
+        color: root.offlineTone
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+      }
+
+      Column {
+        visible: detailsOpen
+        width: parent.width
+        spacing: Style.space(2)
+
+        DetailLine {
+          label: "USB ID"
+          value: modelData.vendorId
+            ? modelData.vendorId + ":" + modelData.productId
+            : "Not recorded"
+        }
+
+        DetailLine {
+          label: "SERIAL"
+          value: modelData.serial || "Not reported"
+        }
+
+        DetailLine {
+          label: "INTERFACE"
+          value: modelData.bridge || modelData.driver
+            || String(modelData.mode || "USB").toUpperCase()
+        }
+
+        DetailLine {
+          label: "IDENTITY"
+          value: root.identityLabel(modelData)
+        }
+
+        DetailLine {
+          label: "BASIS"
+          value: root.identityReasonLabel(modelData)
+        }
+
+        DetailLine {
+          label: "PATH"
+          value: modelData.stablePath || "Not available"
+        }
+
+        Row {
+          spacing: Style.space(5)
+
+          PanelActionButton {
+            iconText: root.renamingKey === root.profileKey(modelData)
+              ? "󰄬" : "󰏫"
+            foreground: root.bar.foreground
+            fontFamily: root.bar.fontFamily
+            fontSize: Style.font.bodySmall
+            size: Style.space(24)
+            bordered: true
+            radius: 0
+            tooltipText: root.renamingKey === root.profileKey(modelData)
+              ? "Save device name"
+              : "Set a friendly name for this device"
+            onClicked: {
+              if (root.renamingKey === root.profileKey(modelData)) {
+                root.saveNickname(modelData, offlineNameField.text)
+              } else {
+                root.beginRename(modelData)
+                Qt.callLater(function() {
+                  offlineNameField.forceActiveFocus()
+                  offlineNameField.selectAll()
+                })
+              }
+            }
+          }
+
+          ProfilePill {
+            label: String(root.effectiveBaud(modelData))
+            active: root.hasProfile(modelData)
+            tooltipText: "Saved baud rate · click to change"
+            onActivated: root.cycleDeviceBaud(modelData)
+          }
+
+          ProfilePill {
+            label: root.effectiveLineEnding(modelData).toUpperCase()
+            active: root.hasProfile(modelData)
+            tooltipText: "Line ending · click to cycle"
+            onActivated: root.cycleDeviceLineEnding(modelData)
+          }
+
+          ProfilePill {
+            label: root.effectiveDataFormat(modelData)
+            active: root.hasProfile(modelData)
+            tooltipText: "Serial format · click to cycle"
+            onActivated: root.cycleDeviceDataFormat(modelData)
+          }
+
+          ProfilePill {
+            label: root.effectiveLogging(modelData) ? "LOG" : "NO LOG"
+            active: root.effectiveLogging(modelData)
+            tooltipText: "Session logging · click to toggle"
+            onActivated: root.toggleDeviceLogging(modelData)
+          }
+        }
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: if (containsMouse) {
+        root.cursorActive = true
+        root.selectedIndex = navigationIndex
+      }
+      onClicked: root.toggleOfflineDetails(modelData)
     }
   }
 

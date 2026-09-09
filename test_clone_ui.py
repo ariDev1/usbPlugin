@@ -9,7 +9,10 @@ class CloneUiLayoutContractTests(unittest.TestCase):
 
     def test_panel_has_adaptive_wide_mode(self):
         self.assertIn("readonly property bool wideMode", self.source)
-        self.assertIn("root.devices.length >= 2", self.source)
+        self.assertIn(
+            "root.navigationDeviceCount >= 2",
+            self.source,
+        )
         self.assertIn("compactPanelWidth", self.source)
         self.assertIn("widePanelWidth", self.source)
         self.assertIn("compactPanelHeight", self.source)
@@ -49,6 +52,11 @@ class CloneUiLayoutContractTests(unittest.TestCase):
             "ScrollBar.horizontal.policy: ScrollBar.AlwaysOff",
             self.source,
         )
+
+    def test_scroll_content_uses_full_available_width(self):
+        normalized = " ".join(self.source.split())
+        self.assertIn("id: deviceScroll", normalized)
+        self.assertIn("contentWidth: availableWidth", normalized)
 
 
 class CloneUiRoleProbeContractTests(unittest.TestCase):
@@ -280,6 +288,146 @@ class CloneUiVisualHierarchyContractTests(unittest.TestCase):
         self.assertIn(
             "border.color: active ? root.bar.foreground : root.hairline",
             normalized,
+        )
+
+
+class CloneUiOfflineFoldContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_devices_are_partitioned_for_presentation(self):
+        self.assertIn(
+            "readonly property var connectedPanelDevices:",
+            self.source,
+        )
+        self.assertIn(
+            "readonly property var offlinePanelDevices:",
+            self.source,
+        )
+        self.assertIn(
+            "device.connected",
+            self.normalized,
+        )
+        self.assertIn(
+            "!device.connected",
+            self.normalized,
+        )
+
+    def test_offline_fold_state_is_runtime_only(self):
+        self.assertIn(
+            "property bool offlineFoldOpen: false",
+            self.source,
+        )
+        self.assertIn(
+            'property string expandedOfflineKey: ""',
+            self.source,
+        )
+        self.assertNotIn(
+            "persistSettings({ offlineFoldOpen",
+            self.source,
+        )
+        self.assertNotIn(
+            "persistDeviceProfile(device, { offlineFoldOpen",
+            self.source,
+        )
+
+    def test_offline_section_auto_opens_without_connected_devices(self):
+        self.assertIn(
+            "readonly property bool offlineVisible:",
+            self.source,
+        )
+        self.assertIn(
+            "root.connectedPanelDevices.length === 0 || root.offlineFoldOpen",
+            self.normalized,
+        )
+
+    def test_wide_mode_uses_visible_navigation_count(self):
+        self.assertIn(
+            "readonly property int navigationDeviceCount:",
+            self.source,
+        )
+        self.assertIn(
+            "readonly property bool wideMode: root.navigationDeviceCount >= 2",
+            self.source,
+        )
+
+    def test_connected_grid_contains_connected_devices_only(self):
+        self.assertIn(
+            "model: root.connectedPanelDevices",
+            self.source,
+        )
+
+    def test_offline_section_has_count_and_fold_control(self):
+        self.assertIn(
+            "id: offlineSection",
+            self.source,
+        )
+        self.assertIn(
+            "REMEMBERED OFFLINE DEVICES",
+            self.source,
+        )
+        self.assertIn(
+            "root.offlinePanelDevices.length",
+            self.source,
+        )
+        self.assertIn(
+            "root.setOfflineFoldOpen(",
+            self.source,
+        )
+
+    def test_offline_rows_use_compact_accordion_component(self):
+        self.assertIn(
+            "component OfflineDeviceRow:",
+            self.source,
+        )
+        self.assertIn(
+            "function toggleOfflineDetails(device)",
+            self.source,
+        )
+        self.assertIn(
+            "root.expandedOfflineKey",
+            self.source,
+        )
+
+    def test_keyboard_navigation_excludes_hidden_offline_devices(self):
+        block = self.function_block(
+            "selectByDelta(delta)",
+            "setOfflineFoldOpen(open)",
+        )
+        self.assertIn(
+            "root.navigationDeviceCount",
+            block,
+        )
+        self.assertNotIn(
+            "devices.length - 1",
+            block,
+        )
+
+    def test_collapsing_offline_section_clears_hidden_state(self):
+        block = self.function_block(
+            "setOfflineFoldOpen(open)",
+            "toggleOfflineDetails(device)",
+        )
+        self.assertIn(
+            'root.expandedOfflineKey = ""',
+            block,
+        )
+        self.assertIn(
+            "root.navigationDeviceCount",
+            block,
+        )
+        self.assertIn(
+            "root.selectedIndex",
+            block,
         )
 
 
