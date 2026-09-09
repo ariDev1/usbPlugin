@@ -34,7 +34,7 @@ Panel {
   property string workbenchLeftKey: ""
   property string workbenchRightKey: ""
   readonly property int compactPanelWidth: Style.space(380)
-  readonly property int widePanelWidth: Style.space(760)
+  readonly property int widePanelWidth: Style.space(940)
   readonly property int compactPanelHeight: Style.space(600)
   readonly property int widePanelHeight: Style.space(760)
   readonly property int baudRate: Number(setting("baudRate", 115200))
@@ -948,493 +948,41 @@ Panel {
             width: parent.width
           }
 
+          Text {
+            text: "ACTIVE WORKBENCH"
+            color: root.bar.foreground
+            opacity: 0.58
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+            font.letterSpacing: 1.2
+          }
+
           Grid {
-            id: deviceGrid
+            id: workbenchGrid
             width: parent.width
             columns: root.wideMode ? 2 : 1
-            columnSpacing: Style.space(12)
-            rowSpacing: Style.space(14)
+            columnSpacing: Style.space(14)
+            rowSpacing: Style.space(12)
 
-            Repeater {
-              model: root.connectedPanelDevices
+            WorkbenchSlot {
+              slotLabel: "LEFT"
+              slotKey: root.workbenchLeftKey
+              modelData: root.workbenchLeftDevice
+              navigationIndex: 0
+              width: root.wideMode
+                ? (workbenchGrid.width - workbenchGrid.columnSpacing) / 2
+                : workbenchGrid.width
+            }
 
-              Column {
-                id: deviceColumn
-                required property var modelData
-                required property int index
-                width: root.wideMode
-                  ? (deviceGrid.width - deviceGrid.columnSpacing) / 2
-                  : deviceGrid.width
-                spacing: Style.space(8)
-
-                PanelSeparator {
-                  visible: deviceColumn.index > 0
-                    && (!root.wideMode || deviceColumn.index >= 2)
-                  foreground: root.hairline
-                }
-
-              CursorSurface {
-                id: deviceRow
-                width: parent.width
-                implicitHeight: boardInfo.implicitHeight + Style.space(16)
-                hasCursor: root.cursorActive && root.selectedIndex === deviceColumn.index
-                foreground: root.bar.foreground
-                outline: false
-                radius: 0
-
-                Column {
-                  id: boardInfo
-                  z: 1
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  anchors.verticalCenter: parent.verticalCenter
-                  anchors.margins: Style.space(10)
-                  spacing: Style.space(3)
-
-                  Item {
-                    width: parent.width
-                    implicitHeight: nameField.visible ? nameField.implicitHeight : deviceName.implicitHeight
-
-                    Text {
-                      id: deviceName
-                      visible: !nameField.visible
-                      text: root.displayName(deviceColumn.modelData)
-                      color: root.bar.foreground
-                      opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.subtitle
-                      font.bold: true
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-
-                    TextField {
-                      id: nameField
-                      visible: root.renamingKey === root.profileKey(deviceColumn.modelData)
-                      text: root.displayName(deviceColumn.modelData)
-                      placeholderText: "Device name"
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      foreground: root.bar.foreground
-                      horizontalPadding: Style.space(6)
-                      verticalPadding: Style.space(3)
-                      width: parent.width
-                      onAccepted: root.saveNickname(deviceColumn.modelData, text)
-                    }
-                  }
-                  Text {
-                    text: root.deviceStatus(deviceColumn.modelData) + " · " + root.confidenceLabel(deviceColumn.modelData)
-                    color: root.deviceStatusTone(deviceColumn.modelData)
-                    opacity: deviceColumn.modelData.connected
-                      && deviceColumn.modelData.readable
-                      && deviceColumn.modelData.writable ? 0.78 : 1.0
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                    font.letterSpacing: 1.0
-                  }
-
-                  Row {
-                    id: cloneActions
-                    visible: deviceColumn.modelData.connected
-                    spacing: Style.space(5)
-
-                    CloneActionButton {
-                      label: "SOURCE"
-                      active: root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
-                      enabled: root.canSelectCloneSource(deviceColumn.modelData)
-                      tooltipText: active ? "Clear SOURCE role" : "Select this connected device as SOURCE"
-                      onActivated: root.toggleCloneSource(deviceColumn.modelData)
-                    }
-
-                    CloneActionButton {
-                      label: "TARGET"
-                      active: root.cloneTargetKey === root.cloneIdentityKey(deviceColumn.modelData)
-                      enabled: root.canSelectCloneTarget(deviceColumn.modelData)
-                      tooltipText: active ? "Clear TARGET role" : "Select this connected device as TARGET"
-                      onActivated: root.toggleCloneTarget(deviceColumn.modelData)
-                    }
-
-                    CloneActionButton {
-                      label: root.cloneProbeBusy
-                        && root.cloneProbeKey === root.cloneIdentityKey(deviceColumn.modelData)
-                        ? "PROBING" : "PROBE"
-                      enabled: !root.cloneProbeBusy && root.cloneProbeEligible(deviceColumn.modelData)
-                      tooltipText: root.isCloneSelected(deviceColumn.modelData)
-                        ? "Probe selected device · board resets"
-                        : "Select SOURCE or TARGET first"
-                      onActivated: root.startCloneProbe(deviceColumn.modelData)
-                    }
-
-                    CloneActionButton {
-                      label: root.cloneReadBusy
-                        && root.cloneReadKey === root.cloneIdentityKey(deviceColumn.modelData)
-                        ? "READING" : "READ SOURCE"
-                      enabled: root.cloneSourceReadEligible(deviceColumn.modelData)
-                      tooltipText: root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
-                        ? "Read complete SOURCE flash · board resets"
-                        : "Select SOURCE first"
-                      onActivated: root.startCloneSourceRead(deviceColumn.modelData)
-                    }
-                  }
-
-                  Text {
-                    visible: cloneActions.visible
-                      && root.isCloneSelected(deviceColumn.modelData)
-                    text: "PROBE RESETS BOARD"
-                    color: root.bar.urgent
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                    font.letterSpacing: 1.0
-                  }
-
-                  Text {
-                    visible: cloneActions.visible
-                      && root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
-                    text: "READ SOURCE · RESETS BOARD"
-                    color: root.bar.urgent
-                    font.family: root.bar.fontFamily
-                    font.pixelSize: Style.font.caption
-                    font.bold: true
-                    font.letterSpacing: 1.0
-                  }
-
-                  Column {
-                    id: cloneEvidence
-                    width: parent.width
-                    spacing: Style.space(1)
-                    readonly property var evidence: root.cloneProbeResultFor(deviceColumn.modelData)
-                    readonly property string probeError: root.cloneProbeErrorFor(deviceColumn.modelData)
-                    readonly property var readResult: root.cloneReadResult
-                      && root.cloneReadResult.identityKey === String(deviceColumn.modelData.identityKey || "")
-                      ? root.cloneReadResult : null
-                    readonly property string readError: root.cloneSourceKey === String(deviceColumn.modelData.identityKey || "")
-                      ? root.cloneReadError : ""
-                    readonly property string identityKey: String(deviceColumn.modelData.identityKey || "")
-                    visible: evidence !== null
-                      || probeError !== ""
-                      || readResult !== null
-                      || readError !== ""
-                      || root.cloneSourceKey === identityKey
-                      || root.cloneTargetKey === identityKey
-                      || (root.cloneProbeBusy && root.cloneProbeKey === identityKey)
-                      || (root.cloneReadBusy && root.cloneReadKey === identityKey)
-
-                    Text {
-                      visible: root.cloneProbeBusy && root.cloneProbeKey === cloneEvidence.identityKey
-                      text: "ACTIVE PROBE · RUNNING"
-                      color: root.bar.foreground
-                      opacity: 0.65
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                    }
-
-                    Text {
-                      visible: cloneEvidence.probeError !== ""
-                      text: "ACTIVE PROBE FAILED · " + cloneEvidence.probeError
-                      color: root.bar.urgent
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-
-                    Text {
-                      visible: cloneEvidence.evidence !== null
-                      text: "ACTIVE PROBE · " + root.cloneProbeDeviceLabel(cloneEvidence.evidence)
-                      color: root.bar.foreground
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.bodySmall
-                      font.bold: true
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-
-                    Text {
-                      visible: cloneEvidence.evidence !== null
-                      text: root.cloneProbeFlashLabel(cloneEvidence.evidence)
-                      color: root.bar.foreground
-                      opacity: 0.65
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-
-                    Text {
-                      visible: cloneEvidence.evidence !== null
-                        && root.cloneSourceKey === cloneEvidence.identityKey
-                      text: "SOURCE PROBE PASS"
-                      color: root.bar.foreground
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      font.letterSpacing: 1.0
-                    }
-
-                    Text {
-                      visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey
-                      text: "SOURCE READ · RUNNING"
-                      color: root.bar.foreground
-                      opacity: 0.65
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                    }
-
-                    Item {
-                      id: sourceReadProgress
-                      visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey
-                      width: parent.width
-                      height: Style.space(2)
-                      clip: true
-
-                      Rectangle {
-                        anchors.fill: parent
-                        color: root.bar.foreground
-                        opacity: 0.10
-                      }
-
-                      Rectangle {
-                        id: sourceReadProgressSegment
-                        width: Math.max(Style.space(42), sourceReadProgress.width * 0.22)
-                        height: parent.height
-                        color: root.bar.foreground
-                        opacity: 0.55
-
-                        NumberAnimation on x {
-                          running: sourceReadProgress.visible
-                          loops: Animation.Infinite
-                          from: -sourceReadProgressSegment.width
-                          to: sourceReadProgress.width
-                          duration: 1100
-                          easing.type: Easing.Linear
-                        }
-                      }
-                    }
-
-                    Text {
-                      visible: cloneEvidence.readError !== ""
-                      text: "SOURCE READ FAILED · " + cloneEvidence.readError
-                      color: root.bar.urgent
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      elide: Text.ElideRight
-                      width: parent.width
-                    }
-
-                    Text {
-                      visible: cloneEvidence.readResult !== null
-                      text: "SOURCE READ PASS · " + root.cloneReadSizeLabel(cloneEvidence.readResult)
-                      color: root.bar.foreground
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      font.letterSpacing: 1.0
-                    }
-
-                    Text {
-                      visible: cloneEvidence.readResult !== null
-                      text: "SHA-256 " + (cloneEvidence.readResult ? cloneEvidence.readResult.sha256 : "")
-                      color: root.bar.foreground
-                      opacity: 0.75
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      width: parent.width
-                      wrapMode: Text.WrapAnywhere
-                    }
-
-                    Text {
-                      visible: root.cloneTargetKey === cloneEvidence.identityKey
-                      text: "TARGET WRITE LOCKED"
-                      color: root.bar.foreground
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      font.bold: true
-                      font.letterSpacing: 1.0
-                    }
-                  }
-
-                  Row {
-                    id: deviceActions
-                    spacing: Style.space(5)
-                    opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
-
-                    PanelActionButton {
-                      iconText: root.renamingKey === root.profileKey(deviceColumn.modelData) ? "󰄬" : "󰏫"
-                      foreground: root.bar.foreground
-                      fontFamily: root.bar.fontFamily
-                      fontSize: Style.font.bodySmall
-                      size: Style.space(24)
-                      bordered: true
-                      radius: 0
-                      tooltipText: root.renamingKey === root.profileKey(deviceColumn.modelData)
-                        ? "Save device name" : "Set a friendly name for this device"
-                      onClicked: {
-                        if (root.renamingKey === root.profileKey(deviceColumn.modelData)) {
-                          root.saveNickname(deviceColumn.modelData, nameField.text)
-                        } else {
-                          root.beginRename(deviceColumn.modelData)
-                          Qt.callLater(function() {
-                            nameField.forceActiveFocus()
-                            nameField.selectAll()
-                          })
-                        }
-                      }
-                    }
-
-                    PanelActionButton {
-                      iconText: "󰆏"
-                      visible: root.devicePath(deviceColumn.modelData) !== ""
-                      foreground: root.bar.foreground
-                      fontFamily: root.bar.fontFamily
-                      fontSize: Style.font.bodySmall
-                      size: Style.space(24)
-                      bordered: true
-                      radius: 0
-                      tooltipText: "Copy stable device path"
-                      onClicked: root.copy(root.devicePath(deviceColumn.modelData))
-                    }
-
-                    PanelActionButton {
-                      iconText: deviceColumn.modelData.readable && deviceColumn.modelData.writable ? "󰆍" : "󰌾"
-                      visible: deviceColumn.modelData.connected && deviceColumn.modelData.serialAvailable
-                      foreground: root.bar.foreground
-                      fontFamily: root.bar.fontFamily
-                      fontSize: Style.font.bodySmall
-                      size: Style.space(24)
-                      bordered: true
-                      radius: 0
-                      tooltipText: deviceColumn.modelData.readable && deviceColumn.modelData.writable
-                        ? "Open serial monitor at " + root.effectiveBaud(deviceColumn.modelData) + " baud"
-                        : "Add your user to the " + deviceColumn.modelData.group + " group"
-                      onClicked: {
-                        if (deviceColumn.modelData.readable && deviceColumn.modelData.writable)
-                          root.openMonitor(deviceColumn.modelData)
-                        else
-                          root.grantAccess(deviceColumn.modelData)
-                      }
-                    }
-                  }
-                  GridLayout {
-                    id: deviceDetails
-                    width: parent.width
-                    opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
-                    columns: 4
-                    columnSpacing: Style.space(12)
-                    rowSpacing: Style.space(2)
-
-                    CompactLabel { text: "PORT" }
-                    CompactValue { text: deviceColumn.modelData.port || "Not connected" }
-                    CompactLabel { text: "USB ID" }
-                    CompactValue {
-                      text: deviceColumn.modelData.vendorId
-                        ? deviceColumn.modelData.vendorId + ":" + deviceColumn.modelData.productId : "Not recorded"
-                    }
-
-                    CompactLabel { text: "SERIAL" }
-                    CompactValue { text: deviceColumn.modelData.serial || "Not reported" }
-                    CompactLabel { text: "INTERFACE" }
-                    CompactValue {
-                      text: deviceColumn.modelData.bridge || deviceColumn.modelData.driver
-                        || String(deviceColumn.modelData.mode || "USB").toUpperCase()
-                    }
-
-                    GridLayout {
-                      id: identityEvidenceDetails
-                      Layout.columnSpan: 4
-                      Layout.fillWidth: true
-                      columns: 2
-                      columnSpacing: Style.space(12)
-                      rowSpacing: Style.space(2)
-
-                      CompactLabel { text: "IDENTITY" }
-                      CompactValue { text: root.identityLabel(deviceColumn.modelData) }
-
-                      CompactLabel { text: "BASIS" }
-                      CompactValue { text: root.identityReasonLabel(deviceColumn.modelData) }
-
-                      CompactLabel { text: "BOARD SCOPE" }
-                      CompactValue { text: root.identificationScopeLabel(deviceColumn.modelData) }
-
-                      CompactLabel { text: "EVIDENCE" }
-                      CompactValue { text: root.identificationEvidenceLabel(deviceColumn.modelData) }
-                    }
-
-                    CompactLabel { text: "LOCK" }
-                    CompactValue {
-                      text: !deviceColumn.modelData.serialAvailable ? "Not applicable"
-                        : deviceColumn.modelData.locked
-                        ? "In use" + (deviceColumn.modelData.lockPid ? " (PID " + deviceColumn.modelData.lockPid + ")" : "")
-                        : "Available"
-                      urgent: deviceColumn.modelData.locked
-                    }
-                    CompactLabel { text: "ACCESS" }
-                    CompactValue {
-                      text: !deviceColumn.modelData.connected ? "Offline"
-                        : !deviceColumn.modelData.serialAvailable ? "No serial port"
-                        : deviceColumn.modelData.readable && deviceColumn.modelData.writable
-                        ? "Read/write"
-                        : "Join " + (deviceColumn.modelData.group || "device group")
-                          + " (" + deviceColumn.modelData.permissions + ")"
-                      urgent: !(deviceColumn.modelData.readable && deviceColumn.modelData.writable)
-                    }
-
-                    CompactLabel { text: "PATH" }
-                    CompactValue {
-                      text: deviceColumn.modelData.stablePath || "Not available"
-                      Layout.columnSpan: 3
-                    }
-
-                    CompactLabel { text: "SERIAL" }
-                    Row {
-                      visible: deviceColumn.modelData.serialAvailable || !deviceColumn.modelData.connected
-                      Layout.columnSpan: 3
-                      spacing: Style.space(5)
-
-                      ProfilePill {
-                        id: baudSelector
-                        label: String(root.effectiveBaud(deviceColumn.modelData))
-                        active: root.hasProfile(deviceColumn.modelData)
-                        tooltipText: active ? "Saved baud rate · click to change" : "Default baud rate · click to change"
-                        onActivated: root.cycleDeviceBaud(deviceColumn.modelData)
-                      }
-                      ProfilePill {
-                        label: root.effectiveLineEnding(deviceColumn.modelData).toUpperCase()
-                        active: root.hasProfile(deviceColumn.modelData)
-                        tooltipText: "Line ending · click to cycle"
-                        onActivated: root.cycleDeviceLineEnding(deviceColumn.modelData)
-                      }
-                      ProfilePill {
-                        label: root.effectiveDataFormat(deviceColumn.modelData)
-                        active: root.hasProfile(deviceColumn.modelData)
-                        tooltipText: "Serial format · click to cycle"
-                        onActivated: root.cycleDeviceDataFormat(deviceColumn.modelData)
-                      }
-                      ProfilePill {
-                        label: root.effectiveLogging(deviceColumn.modelData) ? "LOG" : "NO LOG"
-                        active: root.effectiveLogging(deviceColumn.modelData)
-                        tooltipText: "Session logging · click to toggle"
-                        onActivated: root.toggleDeviceLogging(deviceColumn.modelData)
-                      }
-                    }
-                  }
-                }
-
-                MouseArea {
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onContainsMouseChanged: if (containsMouse) {
-                    root.cursorActive = true
-                    root.selectedIndex = deviceColumn.index
-                  }
-                  onClicked: root.copy(root.devicePath(deviceColumn.modelData))
-                }
-
-              }
+            WorkbenchSlot {
+              slotLabel: "RIGHT"
+              slotKey: root.workbenchRightKey
+              modelData: root.workbenchRightDevice
+              navigationIndex: root.workbenchLeftDevice !== null ? 1 : 0
+              width: root.wideMode
+                ? (workbenchGrid.width - workbenchGrid.columnSpacing) / 2
+                : workbenchGrid.width
             }
           }
           }
@@ -1531,6 +1079,546 @@ Panel {
             }
           }
         }
+      }
+    }
+  }
+
+  component WorkbenchDeviceCard: Column {
+    id: deviceColumn
+    required property var modelData
+    required property int navigationIndex
+    width: parent ? parent.width : 0
+    spacing: Style.space(8)
+
+    PanelSeparator {
+      visible: deviceColumn.navigationIndex > 0
+        && (!root.wideMode || deviceColumn.navigationIndex >= 2)
+      foreground: root.hairline
+    }
+
+  CursorSurface {
+    id: deviceRow
+    width: parent.width
+    implicitHeight: boardInfo.implicitHeight + Style.space(16)
+    hasCursor: root.cursorActive && root.selectedIndex === deviceColumn.navigationIndex
+    foreground: root.bar.foreground
+    outline: false
+    radius: 0
+
+    Column {
+      id: boardInfo
+      z: 1
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.margins: Style.space(10)
+      spacing: Style.space(3)
+
+      Item {
+        width: parent.width
+        implicitHeight: nameField.visible ? nameField.implicitHeight : deviceName.implicitHeight
+
+        Text {
+          id: deviceName
+          visible: !nameField.visible
+          text: root.displayName(deviceColumn.modelData)
+          color: root.bar.foreground
+          opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.subtitle
+          font.bold: true
+          elide: Text.ElideRight
+          width: parent.width
+        }
+
+        TextField {
+          id: nameField
+          visible: root.renamingKey === root.profileKey(deviceColumn.modelData)
+          text: root.displayName(deviceColumn.modelData)
+          placeholderText: "Device name"
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          foreground: root.bar.foreground
+          horizontalPadding: Style.space(6)
+          verticalPadding: Style.space(3)
+          width: parent.width
+          onAccepted: root.saveNickname(deviceColumn.modelData, text)
+        }
+      }
+      Text {
+        text: root.deviceStatus(deviceColumn.modelData) + " · " + root.confidenceLabel(deviceColumn.modelData)
+        color: root.deviceStatusTone(deviceColumn.modelData)
+        opacity: deviceColumn.modelData.connected
+          && deviceColumn.modelData.readable
+          && deviceColumn.modelData.writable ? 0.78 : 1.0
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+      }
+
+      Row {
+        id: cloneActions
+        visible: deviceColumn.modelData.connected
+        spacing: Style.space(5)
+
+        CloneActionButton {
+          label: "SOURCE"
+          active: root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
+          enabled: root.canSelectCloneSource(deviceColumn.modelData)
+          tooltipText: active ? "Clear SOURCE role" : "Select this connected device as SOURCE"
+          onActivated: root.toggleCloneSource(deviceColumn.modelData)
+        }
+
+        CloneActionButton {
+          label: "TARGET"
+          active: root.cloneTargetKey === root.cloneIdentityKey(deviceColumn.modelData)
+          enabled: root.canSelectCloneTarget(deviceColumn.modelData)
+          tooltipText: active ? "Clear TARGET role" : "Select this connected device as TARGET"
+          onActivated: root.toggleCloneTarget(deviceColumn.modelData)
+        }
+
+        CloneActionButton {
+          label: root.cloneProbeBusy
+            && root.cloneProbeKey === root.cloneIdentityKey(deviceColumn.modelData)
+            ? "PROBING" : "PROBE"
+          enabled: !root.cloneProbeBusy && root.cloneProbeEligible(deviceColumn.modelData)
+          tooltipText: root.isCloneSelected(deviceColumn.modelData)
+            ? "Probe selected device · board resets"
+            : "Select SOURCE or TARGET first"
+          onActivated: root.startCloneProbe(deviceColumn.modelData)
+        }
+
+        CloneActionButton {
+          label: root.cloneReadBusy
+            && root.cloneReadKey === root.cloneIdentityKey(deviceColumn.modelData)
+            ? "READING" : "READ SOURCE"
+          enabled: root.cloneSourceReadEligible(deviceColumn.modelData)
+          tooltipText: root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
+            ? "Read complete SOURCE flash · board resets"
+            : "Select SOURCE first"
+          onActivated: root.startCloneSourceRead(deviceColumn.modelData)
+        }
+      }
+
+      Text {
+        visible: cloneActions.visible
+          && root.isCloneSelected(deviceColumn.modelData)
+        text: "PROBE RESETS BOARD"
+        color: root.bar.urgent
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+      }
+
+      Text {
+        visible: cloneActions.visible
+          && root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
+        text: "READ SOURCE · RESETS BOARD"
+        color: root.bar.urgent
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
+      }
+
+      Column {
+        id: cloneEvidence
+        width: parent.width
+        spacing: Style.space(1)
+        readonly property var evidence: root.cloneProbeResultFor(deviceColumn.modelData)
+        readonly property string probeError: root.cloneProbeErrorFor(deviceColumn.modelData)
+        readonly property var readResult: root.cloneReadResult
+          && root.cloneReadResult.identityKey === String(deviceColumn.modelData.identityKey || "")
+          ? root.cloneReadResult : null
+        readonly property string readError: root.cloneSourceKey === String(deviceColumn.modelData.identityKey || "")
+          ? root.cloneReadError : ""
+        readonly property string identityKey: String(deviceColumn.modelData.identityKey || "")
+        visible: evidence !== null
+          || probeError !== ""
+          || readResult !== null
+          || readError !== ""
+          || root.cloneSourceKey === identityKey
+          || root.cloneTargetKey === identityKey
+          || (root.cloneProbeBusy && root.cloneProbeKey === identityKey)
+          || (root.cloneReadBusy && root.cloneReadKey === identityKey)
+
+        Text {
+          visible: root.cloneProbeBusy && root.cloneProbeKey === cloneEvidence.identityKey
+          text: "ACTIVE PROBE · RUNNING"
+          color: root.bar.foreground
+          opacity: 0.65
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Text {
+          visible: cloneEvidence.probeError !== ""
+          text: "ACTIVE PROBE FAILED · " + cloneEvidence.probeError
+          color: root.bar.urgent
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          elide: Text.ElideRight
+          width: parent.width
+        }
+
+        Text {
+          visible: cloneEvidence.evidence !== null
+          text: "ACTIVE PROBE · " + root.cloneProbeDeviceLabel(cloneEvidence.evidence)
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.bodySmall
+          font.bold: true
+          elide: Text.ElideRight
+          width: parent.width
+        }
+
+        Text {
+          visible: cloneEvidence.evidence !== null
+          text: root.cloneProbeFlashLabel(cloneEvidence.evidence)
+          color: root.bar.foreground
+          opacity: 0.65
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+        }
+
+        Text {
+          visible: cloneEvidence.evidence !== null
+            && root.cloneSourceKey === cloneEvidence.identityKey
+          text: "SOURCE PROBE PASS"
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.0
+        }
+
+        Text {
+          visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey
+          text: "SOURCE READ · RUNNING"
+          color: root.bar.foreground
+          opacity: 0.65
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+        }
+
+        Item {
+          id: sourceReadProgress
+          visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey
+          width: parent.width
+          height: Style.space(2)
+          clip: true
+
+          Rectangle {
+            anchors.fill: parent
+            color: root.bar.foreground
+            opacity: 0.10
+          }
+
+          Rectangle {
+            id: sourceReadProgressSegment
+            width: Math.max(Style.space(42), sourceReadProgress.width * 0.22)
+            height: parent.height
+            color: root.bar.foreground
+            opacity: 0.55
+
+            NumberAnimation on x {
+              running: sourceReadProgress.visible
+              loops: Animation.Infinite
+              from: -sourceReadProgressSegment.width
+              to: sourceReadProgress.width
+              duration: 1100
+              easing.type: Easing.Linear
+            }
+          }
+        }
+
+        Text {
+          visible: cloneEvidence.readError !== ""
+          text: "SOURCE READ FAILED · " + cloneEvidence.readError
+          color: root.bar.urgent
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          elide: Text.ElideRight
+          width: parent.width
+        }
+
+        Text {
+          visible: cloneEvidence.readResult !== null
+          text: "SOURCE READ PASS · " + root.cloneReadSizeLabel(cloneEvidence.readResult)
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.0
+        }
+
+        Text {
+          visible: cloneEvidence.readResult !== null
+          text: "SHA-256 " + (cloneEvidence.readResult ? cloneEvidence.readResult.sha256 : "")
+          color: root.bar.foreground
+          opacity: 0.75
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          width: parent.width
+          wrapMode: Text.WrapAnywhere
+        }
+
+        Text {
+          visible: root.cloneTargetKey === cloneEvidence.identityKey
+          text: "TARGET WRITE LOCKED"
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.0
+        }
+      }
+
+      Row {
+        id: deviceActions
+        spacing: Style.space(5)
+        opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
+
+        PanelActionButton {
+          iconText: root.renamingKey === root.profileKey(deviceColumn.modelData) ? "󰄬" : "󰏫"
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+          fontSize: Style.font.bodySmall
+          size: Style.space(24)
+          bordered: true
+          radius: 0
+          tooltipText: root.renamingKey === root.profileKey(deviceColumn.modelData)
+            ? "Save device name" : "Set a friendly name for this device"
+          onClicked: {
+            if (root.renamingKey === root.profileKey(deviceColumn.modelData)) {
+              root.saveNickname(deviceColumn.modelData, nameField.text)
+            } else {
+              root.beginRename(deviceColumn.modelData)
+              Qt.callLater(function() {
+                nameField.forceActiveFocus()
+                nameField.selectAll()
+              })
+            }
+          }
+        }
+
+        PanelActionButton {
+          iconText: "󰆏"
+          visible: root.devicePath(deviceColumn.modelData) !== ""
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+          fontSize: Style.font.bodySmall
+          size: Style.space(24)
+          bordered: true
+          radius: 0
+          tooltipText: "Copy stable device path"
+          onClicked: root.copy(root.devicePath(deviceColumn.modelData))
+        }
+
+        PanelActionButton {
+          iconText: deviceColumn.modelData.readable && deviceColumn.modelData.writable ? "󰆍" : "󰌾"
+          visible: deviceColumn.modelData.connected && deviceColumn.modelData.serialAvailable
+          foreground: root.bar.foreground
+          fontFamily: root.bar.fontFamily
+          fontSize: Style.font.bodySmall
+          size: Style.space(24)
+          bordered: true
+          radius: 0
+          tooltipText: deviceColumn.modelData.readable && deviceColumn.modelData.writable
+            ? "Open serial monitor at " + root.effectiveBaud(deviceColumn.modelData) + " baud"
+            : "Add your user to the " + deviceColumn.modelData.group + " group"
+          onClicked: {
+            if (deviceColumn.modelData.readable && deviceColumn.modelData.writable)
+              root.openMonitor(deviceColumn.modelData)
+            else
+              root.grantAccess(deviceColumn.modelData)
+          }
+        }
+      }
+      GridLayout {
+        id: deviceDetails
+        width: parent.width
+        opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
+        columns: 4
+        columnSpacing: Style.space(12)
+        rowSpacing: Style.space(2)
+
+        CompactLabel { text: "PORT" }
+        CompactValue { text: deviceColumn.modelData.port || "Not connected" }
+        CompactLabel { text: "USB ID" }
+        CompactValue {
+          text: deviceColumn.modelData.vendorId
+            ? deviceColumn.modelData.vendorId + ":" + deviceColumn.modelData.productId : "Not recorded"
+        }
+
+        CompactLabel { text: "SERIAL" }
+        CompactValue { text: deviceColumn.modelData.serial || "Not reported" }
+        CompactLabel { text: "INTERFACE" }
+        CompactValue {
+          text: deviceColumn.modelData.bridge || deviceColumn.modelData.driver
+            || String(deviceColumn.modelData.mode || "USB").toUpperCase()
+        }
+
+        GridLayout {
+          id: identityEvidenceDetails
+          Layout.columnSpan: 4
+          Layout.fillWidth: true
+          columns: 2
+          columnSpacing: Style.space(12)
+          rowSpacing: Style.space(2)
+
+          CompactLabel { text: "IDENTITY" }
+          CompactValue { text: root.identityLabel(deviceColumn.modelData) }
+
+          CompactLabel { text: "BASIS" }
+          CompactValue { text: root.identityReasonLabel(deviceColumn.modelData) }
+
+          CompactLabel { text: "BOARD SCOPE" }
+          CompactValue { text: root.identificationScopeLabel(deviceColumn.modelData) }
+
+          CompactLabel { text: "EVIDENCE" }
+          CompactValue { text: root.identificationEvidenceLabel(deviceColumn.modelData) }
+        }
+
+        CompactLabel { text: "LOCK" }
+        CompactValue {
+          text: !deviceColumn.modelData.serialAvailable ? "Not applicable"
+            : deviceColumn.modelData.locked
+            ? "In use" + (deviceColumn.modelData.lockPid ? " (PID " + deviceColumn.modelData.lockPid + ")" : "")
+            : "Available"
+          urgent: deviceColumn.modelData.locked
+        }
+        CompactLabel { text: "ACCESS" }
+        CompactValue {
+          text: !deviceColumn.modelData.connected ? "Offline"
+            : !deviceColumn.modelData.serialAvailable ? "No serial port"
+            : deviceColumn.modelData.readable && deviceColumn.modelData.writable
+            ? "Read/write"
+            : "Join " + (deviceColumn.modelData.group || "device group")
+              + " (" + deviceColumn.modelData.permissions + ")"
+          urgent: !(deviceColumn.modelData.readable && deviceColumn.modelData.writable)
+        }
+
+        CompactLabel { text: "PATH" }
+        CompactValue {
+          text: deviceColumn.modelData.stablePath || "Not available"
+          Layout.columnSpan: 3
+        }
+
+        CompactLabel { text: "SERIAL" }
+        Row {
+          visible: deviceColumn.modelData.serialAvailable || !deviceColumn.modelData.connected
+          Layout.columnSpan: 3
+          spacing: Style.space(5)
+
+          ProfilePill {
+            id: baudSelector
+            label: String(root.effectiveBaud(deviceColumn.modelData))
+            active: root.hasProfile(deviceColumn.modelData)
+            tooltipText: active ? "Saved baud rate · click to change" : "Default baud rate · click to change"
+            onActivated: root.cycleDeviceBaud(deviceColumn.modelData)
+          }
+          ProfilePill {
+            label: root.effectiveLineEnding(deviceColumn.modelData).toUpperCase()
+            active: root.hasProfile(deviceColumn.modelData)
+            tooltipText: "Line ending · click to cycle"
+            onActivated: root.cycleDeviceLineEnding(deviceColumn.modelData)
+          }
+          ProfilePill {
+            label: root.effectiveDataFormat(deviceColumn.modelData)
+            active: root.hasProfile(deviceColumn.modelData)
+            tooltipText: "Serial format · click to cycle"
+            onActivated: root.cycleDeviceDataFormat(deviceColumn.modelData)
+          }
+          ProfilePill {
+            label: root.effectiveLogging(deviceColumn.modelData) ? "LOG" : "NO LOG"
+            active: root.effectiveLogging(deviceColumn.modelData)
+            tooltipText: "Session logging · click to toggle"
+            onActivated: root.toggleDeviceLogging(deviceColumn.modelData)
+          }
+        }
+      }
+    }
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onContainsMouseChanged: if (containsMouse) {
+        root.cursorActive = true
+        root.selectedIndex = deviceColumn.navigationIndex
+      }
+      onClicked: root.copy(root.devicePath(deviceColumn.modelData))
+    }
+
+  }
+
+  component WorkbenchSlot: Column {
+    id: workbenchSlot
+
+    required property string slotLabel
+    required property string slotKey
+    required property var modelData
+    required property int navigationIndex
+
+    width: parent ? parent.width : 0
+    spacing: Style.space(5)
+
+    Text {
+      text: workbenchSlot.slotLabel
+      color: root.bar.foreground
+      opacity: 0.45
+      font.family: root.bar.fontFamily
+      font.pixelSize: Style.font.caption
+      font.bold: true
+      font.letterSpacing: 1.2
+    }
+
+    Loader {
+      id: workbenchCardLoader
+      width: parent.width
+      active: workbenchSlot.modelData !== null
+
+      sourceComponent: Component {
+        WorkbenchDeviceCard {
+          modelData: workbenchSlot.modelData
+          navigationIndex: workbenchSlot.navigationIndex
+          width: workbenchSlot.width
+        }
+      }
+    }
+
+    Column {
+      visible: !workbenchCardLoader.active
+      width: parent.width
+      spacing: Style.space(3)
+
+      Text {
+        text: workbenchSlot.slotKey === ""
+          ? "EMPTY SLOT"
+          : "RESERVED DEVICE"
+        color: root.bar.foreground
+        opacity: 0.65
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.subtitle
+        font.bold: true
+      }
+
+      Text {
+        visible: workbenchSlot.slotKey !== ""
+        text: workbenchSlot.slotKey
+        color: root.bar.foreground
+        opacity: 0.45
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        elide: Text.ElideMiddle
+        width: parent.width
       }
     }
   }

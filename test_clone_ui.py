@@ -1,5 +1,6 @@
 from pathlib import Path
 import unittest
+import re
 
 
 class CloneUiLayoutContractTests(unittest.TestCase):
@@ -28,24 +29,30 @@ class CloneUiLayoutContractTests(unittest.TestCase):
             self.source,
         )
 
-    def test_multi_device_area_uses_two_column_grid(self):
+    def test_active_workbench_uses_two_column_grid(self):
         normalized = " ".join(self.source.split())
-        self.assertIn("Grid { id: deviceGrid", normalized)
+        self.assertIn("Grid { id: workbenchGrid", normalized)
         self.assertIn("columns: root.wideMode ? 2 : 1", normalized)
         self.assertIn(
             "width: root.wideMode ? "
-            "(deviceGrid.width - deviceGrid.columnSpacing) / 2 "
-            ": deviceGrid.width",
+            "(workbenchGrid.width - workbenchGrid.columnSpacing) / 2 "
+            ": workbenchGrid.width",
             normalized,
         )
 
-    def test_separators_preserve_device_row_boundaries(self):
-        normalized = " ".join(self.source.split())
+    def test_workbench_card_separator_uses_navigation_index(self):
+        start = self.source.find("component WorkbenchDeviceCard:")
+        end = self.source.find("component WorkbenchSlot:", start)
+        self.assertGreaterEqual(start, 0)
+        self.assertGreater(end, start)
+
+        block = " ".join(self.source[start:end].split())
+        self.assertIn("PanelSeparator {", block)
         self.assertIn(
-            "visible: deviceColumn.index > 0 "
-            "&& (!root.wideMode || deviceColumn.index >= 2)",
-            normalized,
+            "visible: deviceColumn.navigationIndex > 0",
+            block,
         )
+        self.assertNotIn("deviceColumn.index", block)
 
     def test_horizontal_scroll_remains_disabled(self):
         self.assertIn(
@@ -243,14 +250,15 @@ class CloneUiVisualHierarchyContractTests(unittest.TestCase):
             self.source,
         )
 
-    def test_wide_grid_has_subtle_lower_row_separators(self):
-        normalized = " ".join(self.source.split())
-        self.assertIn(
-            "visible: deviceColumn.index > 0 "
-            "&& (!root.wideMode || deviceColumn.index >= 2)",
-            normalized,
-        )
-        self.assertIn("foreground: root.hairline", normalized)
+    def test_workbench_card_separator_uses_hairline(self):
+        start = self.source.find("component WorkbenchDeviceCard:")
+        end = self.source.find("component WorkbenchSlot:", start)
+        self.assertGreaterEqual(start, 0)
+        self.assertGreater(end, start)
+
+        block = " ".join(self.source[start:end].split())
+        self.assertIn("PanelSeparator {", block)
+        self.assertIn("foreground: root.hairline", block)
 
     def test_probe_reset_warning_is_contextual(self):
         normalized = " ".join(self.source.split())
@@ -282,9 +290,10 @@ class CloneUiVisualHierarchyContractTests(unittest.TestCase):
         self.assertIn("opacity: 0.45", label_block)
         self.assertIn("opacity: urgent ? 1.0 : 0.92", value_block)
 
-    def test_controls_and_grid_use_refined_spacing(self):
+    def test_controls_and_workbench_use_refined_spacing(self):
         normalized = " ".join(self.source.split())
-        self.assertIn("rowSpacing: Style.space(14)", normalized)
+        self.assertIn("columnSpacing: Style.space(14)", normalized)
+        self.assertIn("rowSpacing: Style.space(12)", normalized)
         self.assertIn(
             "border.color: active ? root.bar.foreground : root.hairline",
             normalized,
@@ -360,8 +369,16 @@ class CloneUiOfflineFoldContractTests(unittest.TestCase):
             self.source,
         )
 
-    def test_connected_grid_contains_connected_devices_only(self):
+    def test_full_connected_view_uses_only_workbench_slots(self):
         self.assertIn(
+            "modelData: root.workbenchLeftDevice",
+            self.source,
+        )
+        self.assertIn(
+            "modelData: root.workbenchRightDevice",
+            self.source,
+        )
+        self.assertNotIn(
             "model: root.connectedPanelDevices",
             self.source,
         )
@@ -570,6 +587,72 @@ class CloneUiWorkbenchModelContractTests(unittest.TestCase):
         )
         self.assertIn('return "SOURCE"', self.source)
         self.assertIn('return "TARGET"', self.source)
+
+
+class CloneUiWorkbenchLayoutContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def component_block(self, name, next_name):
+        start = self.source.find("component " + name + ":")
+        if start < 0:
+            return ""
+        end = self.source.find("component " + next_name + ":", start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_active_workbench_has_exactly_two_slots(self):
+        self.assertIn('text: "ACTIVE WORKBENCH"', self.source)
+        self.assertIn("id: workbenchGrid", self.source)
+
+        start = self.source.find("id: workbenchGrid")
+        self.assertGreaterEqual(start, 0)
+        block = self.source[start:]
+
+        self.assertEqual(block.count("WorkbenchSlot {"), 2)
+        self.assertIn('slotLabel: "LEFT"', block)
+        self.assertIn('slotLabel: "RIGHT"', block)
+        self.assertIn(
+            "modelData: root.workbenchLeftDevice",
+            block,
+        )
+        self.assertIn(
+            "modelData: root.workbenchRightDevice",
+            block,
+        )
+
+    def test_full_device_card_is_reusable_workbench_component(self):
+        block = self.component_block(
+            "WorkbenchDeviceCard",
+            "WorkbenchSlot",
+        )
+
+        self.assertNotEqual(block, "")
+        self.assertIn("required property var modelData", block)
+        self.assertIn("required property int navigationIndex", block)
+
+        for required_id in (
+            "id: cloneActions",
+            "id: cloneEvidence",
+            "id: deviceDetails",
+        ):
+            self.assertIn(required_id, block)
+
+    def test_old_full_grid_no_longer_repeats_all_connected_devices(self):
+        self.assertNotIn(
+            "model: root.connectedPanelDevices",
+            self.source,
+        )
+
+    def test_wide_panel_target_is_in_engineering_range(self):
+        match = re.search(
+            r"readonly property int widePanelWidth:\s*Style\.space\((\d+)\)",
+            self.source,
+        )
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)), 920)
+        self.assertLessEqual(int(match.group(1)), 960)
 
 
 if __name__ == "__main__":
