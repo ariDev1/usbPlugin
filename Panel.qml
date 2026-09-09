@@ -31,6 +31,8 @@ Panel {
   property string cloneReadError: ""
   property bool offlineFoldOpen: false
   property string expandedOfflineKey: ""
+  property string workbenchLeftKey: ""
+  property string workbenchRightKey: ""
   readonly property int compactPanelWidth: Style.space(380)
   readonly property int widePanelWidth: Style.space(760)
   readonly property int compactPanelHeight: Style.space(600)
@@ -49,9 +51,10 @@ Panel {
   readonly property var connectedPanelDevices: devices.filter(function(device) {
     return device.connected
   })
-  readonly property var offlinePanelDevices: devices.filter(function(device) {
+  readonly property var projectedOfflineDevices: devices.filter(function(device) {
     return !device.connected
   })
+  readonly property var offlinePanelDevices: projectedOfflineDevices
   readonly property bool offlineVisible:
     root.connectedPanelDevices.length === 0 || root.offlineFoldOpen
   readonly property int navigationDeviceCount:
@@ -117,6 +120,7 @@ Panel {
       scanError = ""
       migrateProfiles(connectedDevices)
       reconcileCloneState(connectedDevices)
+      reconcileWorkbenchSlots()
       if (selectedIndex >= root.navigationDeviceCount)
         selectedIndex = Math.max(0, root.navigationDeviceCount - 1)
     } catch (error) {
@@ -238,6 +242,92 @@ Panel {
         || device.locked)
       return root.warningTone
     return root.readyTone
+  }
+
+  function validWorkbenchIdentity(device) {
+    if (!device) return ""
+
+    var key = String(device.identityKey || "")
+    if (key.indexOf("usb-serial:") === 0
+        || key.indexOf("usb-topology:") === 0)
+      return key
+
+    return ""
+  }
+
+  function sortedConnectedWorkbenchCandidates() {
+    var candidates = []
+
+    for (var index = 0; index < root.connectedPanelDevices.length; index++) {
+      var device = root.connectedPanelDevices[index]
+      var rawKey = String(device.identityKey || "")
+      var key = root.validWorkbenchIdentity(device)
+      if (!device.connected || rawKey === "" || key === "") continue
+      candidates.push(device)
+    }
+
+    candidates.sort(function(a, b) {
+      var ak = String(a.identityKey || "")
+      var bk = String(b.identityKey || "")
+      return ak < bk ? -1 : (ak > bk ? 1 : 0)
+    })
+
+    return candidates
+  }
+
+  function deviceForIdentity(key) {
+    var identity = String(key || "")
+    if (identity === "") return null
+
+    for (var index = 0; index < root.devices.length; index++) {
+      var device = root.devices[index]
+      if (String(device.identityKey || "") === identity)
+        return device
+    }
+
+    return null
+  }
+
+  function reconcileWorkbenchSlots() {
+    var candidates = root.sortedConnectedWorkbenchCandidates()
+
+    if (root.workbenchLeftKey === "") {
+      for (var leftIndex = 0; leftIndex < candidates.length; leftIndex++) {
+        var leftKey = String(candidates[leftIndex].identityKey || "")
+        if (leftKey !== "" && leftKey !== root.workbenchRightKey) {
+          root.workbenchLeftKey = leftKey
+          break
+        }
+      }
+    }
+
+    if (root.workbenchRightKey === "") {
+      for (var rightIndex = 0; rightIndex < candidates.length; rightIndex++) {
+        var rightKey = String(candidates[rightIndex].identityKey || "")
+        if (rightKey !== ""
+            && rightKey !== root.workbenchLeftKey
+            && rightKey !== root.workbenchRightKey) {
+          root.workbenchRightKey = rightKey
+          break
+        }
+      }
+    }
+  }
+
+  function assignWorkbenchSlot(side, device) {
+    var key = root.validWorkbenchIdentity(device)
+    if (key === "" || !device || !device.connected) return
+
+    if (side === "left") {
+      if (root.workbenchRightKey === key) return
+      root.workbenchLeftKey = key
+      return
+    }
+
+    if (side === "right") {
+      if (root.workbenchLeftKey === key) return
+      root.workbenchRightKey = key
+    }
   }
 
   function cloneIdentityKey(device) {

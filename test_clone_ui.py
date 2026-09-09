@@ -431,5 +431,84 @@ class CloneUiOfflineFoldContractTests(unittest.TestCase):
         )
 
 
+class CloneUiWorkbenchStateContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_workbench_slots_are_runtime_only(self):
+        self.assertIn('property string workbenchLeftKey: ""', self.source)
+        self.assertIn('property string workbenchRightKey: ""', self.source)
+        self.assertNotIn("persistSettings({ workbenchLeftKey", self.source)
+        self.assertNotIn("persistSettings({ workbenchRightKey", self.source)
+        self.assertNotIn(
+            "persistDeviceProfile(device, { workbenchLeftKey",
+            self.source,
+        )
+        self.assertNotIn(
+            "persistDeviceProfile(device, { workbenchRightKey",
+            self.source,
+        )
+
+    def test_workbench_identity_accepts_only_scanner_identity_keys(self):
+        block = self.function_block(
+            "validWorkbenchIdentity(device)",
+            "sortedConnectedWorkbenchCandidates()",
+        )
+        self.assertIn('key.indexOf("usb-serial:") === 0', block)
+        self.assertIn('key.indexOf("usb-topology:") === 0', block)
+
+    def test_workbench_candidates_use_connected_identity_only(self):
+        block = self.function_block(
+            "sortedConnectedWorkbenchCandidates()",
+            "deviceForIdentity(key)",
+        )
+        self.assertIn("device.connected", block)
+        self.assertIn('String(device.identityKey || "")', block)
+        self.assertIn("candidates.sort", block)
+        self.assertIn("identityKey", block)
+
+    def test_reconcile_fills_empty_slots_without_replacing_reserved_slots(self):
+        block = self.function_block(
+            "reconcileWorkbenchSlots()",
+            "assignWorkbenchSlot(side, device)",
+        )
+        self.assertIn('if (root.workbenchLeftKey === "")', block)
+        self.assertIn('if (root.workbenchRightKey === "")', block)
+        self.assertNotIn('root.workbenchLeftKey = ""', block)
+        self.assertNotIn('root.workbenchRightKey = ""', block)
+
+    def test_one_identity_cannot_occupy_both_slots(self):
+        block = self.function_block(
+            "assignWorkbenchSlot(side, device)",
+            "cloneIdentityKey(device)",
+        )
+        self.assertIn("root.workbenchRightKey === key", block)
+        self.assertIn("root.workbenchLeftKey === key", block)
+
+    def test_slot_assignment_does_not_change_clone_roles(self):
+        block = self.function_block(
+            "assignWorkbenchSlot(side, device)",
+            "cloneIdentityKey(device)",
+        )
+        self.assertNotEqual(block, "")
+        self.assertNotIn("cloneSourceKey =", block)
+        self.assertNotIn("cloneTargetKey =", block)
+
+    def test_device_refresh_reconciles_workbench_slots(self):
+        block = self.function_block(
+            "updateDevices(raw)",
+            "copy(value)",
+        )
+        self.assertIn("reconcileWorkbenchSlots()", block)
+
+
 if __name__ == "__main__":
     unittest.main()
