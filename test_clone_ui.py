@@ -825,5 +825,95 @@ class CloneUiWorkbenchNavigationContractTests(unittest.TestCase):
         )
 
 
+class CloneUiWorkbenchCloneIsolationContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def component_block(self, name, next_name):
+        start = self.source.find("component " + name + ":")
+        if start < 0:
+            return ""
+        end = self.source.find("component " + next_name + ":", start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_manual_slot_assignment_cannot_modify_clone_state(self):
+        block = self.function_block(
+            "assignWorkbenchSlot(side, device)",
+            "workbenchCloneRole(device)",
+        )
+        self.assertNotEqual(block, "")
+
+        for forbidden in (
+            "cloneSourceKey =",
+            "cloneTargetKey =",
+            "clearCloneReadEvidence",
+            "setCloneProbeEvidence",
+            "cloneReadResult =",
+            "cloneProbeResults =",
+        ):
+            self.assertNotIn(forbidden, block)
+
+    def test_automatic_slot_reconcile_cannot_modify_clone_state(self):
+        block = self.function_block(
+            "reconcileWorkbenchSlots()",
+            "assignWorkbenchSlot(side, device)",
+        )
+        self.assertNotEqual(block, "")
+
+        for forbidden in (
+            "cloneSourceKey",
+            "cloneTargetKey",
+            "cloneRead",
+            "cloneProbe",
+        ):
+            self.assertNotIn(forbidden, block)
+
+    def test_rack_clone_role_is_display_only(self):
+        block = self.component_block(
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+        )
+        self.assertNotEqual(block, "")
+        self.assertIn(
+            "root.workbenchCloneRole(modelData)",
+            block,
+        )
+
+        for forbidden in (
+            "toggleCloneSource",
+            "toggleCloneTarget",
+            "startCloneProbe",
+            "startCloneSourceRead",
+        ):
+            self.assertNotIn(forbidden, block)
+
+    def test_full_workbench_card_preserves_clone_controls(self):
+        block = self.component_block(
+            "WorkbenchDeviceCard",
+            "WorkbenchSlot",
+        )
+        self.assertNotEqual(block, "")
+
+        for required in (
+            'label: "SOURCE"',
+            'label: "TARGET"',
+            '"PROBE"',
+            '"READ SOURCE"',
+            "PROBE RESETS BOARD",
+            "READ SOURCE · RESETS BOARD",
+            "TARGET WRITE LOCKED",
+            "id: cloneEvidence",
+        ):
+            self.assertIn(required, block)
+
+
 if __name__ == "__main__":
     unittest.main()
