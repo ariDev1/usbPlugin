@@ -988,6 +988,40 @@ Panel {
           }
 
           Column {
+            visible: root.rackDevices.length > 0
+            width: parent.width
+            spacing: Style.space(6)
+
+            Text {
+              text: "CONNECTED DEVICES · " + root.rackDevices.length
+              color: root.bar.foreground
+              opacity: 0.58
+              font.family: root.bar.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+              font.letterSpacing: 1.0
+            }
+
+            Grid {
+              id: connectedRack
+              width: parent.width
+              columns: root.wideMode ? 2 : 1
+              columnSpacing: Style.space(10)
+              rowSpacing: Style.space(6)
+
+              Repeater {
+                model: root.rackDevices
+
+                ConnectedRackRow {
+                  width: root.wideMode
+                    ? (connectedRack.width - connectedRack.columnSpacing) / 2
+                    : connectedRack.width
+                }
+              }
+            }
+          }
+
+          Column {
             id: offlineSection
             visible: root.offlinePanelDevices.length > 0
             width: parent.width
@@ -1078,6 +1112,95 @@ Panel {
               anchors.right: parent.right
             }
           }
+        }
+      }
+    }
+  }
+
+  component ConnectedRackRow: Rectangle {
+    id: rackRow
+
+    required property var modelData
+    required property int index
+
+    readonly property string cloneRole:
+      root.workbenchCloneRole(modelData)
+
+    width: parent ? parent.width : 0
+    height: rackBody.implicitHeight + Style.space(12)
+    color: "transparent"
+    border.width: 1
+    border.color: root.hairline
+    radius: 0
+
+    RowLayout {
+      id: rackBody
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.margins: Style.space(6)
+      spacing: Style.space(8)
+
+      Column {
+        Layout.fillWidth: true
+        Layout.minimumWidth: 0
+        spacing: Style.space(2)
+
+        Row {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Text {
+            text: root.displayName(modelData)
+            color: root.bar.foreground
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.bodySmall
+            font.bold: true
+            elide: Text.ElideRight
+            width: Math.max(0, parent.width - rackRole.implicitWidth - Style.space(8))
+          }
+
+          Text {
+            id: rackRole
+            visible: rackRow.cloneRole !== ""
+            text: rackRow.cloneRole
+            color: root.bar.foreground
+            opacity: 0.72
+            font.family: root.bar.fontFamily
+            font.pixelSize: Style.font.caption
+            font.bold: true
+          }
+        }
+
+        Text {
+          text: root.deviceStatus(modelData)
+            + " · "
+            + (modelData.bridge || modelData.driver
+              || String(modelData.mode || "USB").toUpperCase())
+            + " · "
+            + (modelData.port || "NO PORT")
+          color: root.deviceStatusTone(modelData)
+          opacity: 0.78
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+          width: parent.width
+        }
+      }
+
+      Row {
+        spacing: Style.space(4)
+
+        CloneActionButton {
+          label: "L"
+          tooltipText: "Open this device in LEFT workbench slot"
+          onActivated: root.assignWorkbenchSlot("left", modelData)
+        }
+
+        CloneActionButton {
+          label: "R"
+          tooltipText: "Open this device in RIGHT workbench slot"
+          onActivated: root.assignWorkbenchSlot("right", modelData)
         }
       }
     }

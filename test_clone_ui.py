@@ -655,5 +655,73 @@ class CloneUiWorkbenchLayoutContractTests(unittest.TestCase):
         self.assertLessEqual(int(match.group(1)), 960)
 
 
+class CloneUiConnectedRackContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def component_block(self, name, next_name):
+        start = self.source.find("component " + name + ":")
+        if start < 0:
+            return ""
+        end = self.source.find("component " + next_name + ":", start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_connected_rack_uses_only_rack_devices(self):
+        self.assertIn("id: connectedRack", self.source)
+        self.assertIn("model: root.rackDevices", self.source)
+
+    def test_connected_rack_uses_two_columns_in_wide_mode(self):
+        start = self.source.find("id: connectedRack")
+        self.assertGreaterEqual(start, 0)
+        block = " ".join(self.source[start:start + 1400].split())
+        self.assertIn(
+            "columns: root.wideMode ? 2 : 1",
+            block,
+        )
+
+    def test_rack_row_has_explicit_left_and_right_controls(self):
+        block = self.component_block(
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+        )
+        self.assertNotEqual(block, "")
+        self.assertIn('label: "L"', block)
+        self.assertIn('label: "R"', block)
+        self.assertIn(
+            'root.assignWorkbenchSlot("left", modelData)',
+            block,
+        )
+        self.assertIn(
+            'root.assignWorkbenchSlot("right", modelData)',
+            block,
+        )
+
+    def test_rack_row_shows_clone_role_without_changing_it(self):
+        block = self.component_block(
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+        )
+        self.assertNotEqual(block, "")
+        self.assertIn(
+            "root.workbenchCloneRole(modelData)",
+            block,
+        )
+        self.assertNotIn("cloneSourceKey =", block)
+        self.assertNotIn("cloneTargetKey =", block)
+
+    def test_rack_row_does_not_duplicate_full_device_controls(self):
+        block = self.component_block(
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+        )
+        self.assertNotEqual(block, "")
+        self.assertNotIn('label: "PROBE"', block)
+        self.assertNotIn('"READ SOURCE"', block)
+        self.assertNotIn("id: cloneEvidence", block)
+        self.assertNotIn("id: deviceDetails", block)
+
+
 if __name__ == "__main__":
     unittest.main()
