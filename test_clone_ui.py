@@ -915,5 +915,130 @@ class CloneUiWorkbenchCloneIsolationContractTests(unittest.TestCase):
             self.assertIn(required, block)
 
 
+class CloneUiComponentDepthContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def brace_depth_before(self, marker):
+        end = self.source.find(marker)
+        self.assertGreaterEqual(end, 0)
+
+        depth = 0
+        quote = None
+        escape = False
+        block_comment = False
+        i = 0
+
+        while i < end:
+            c = self.source[i]
+            n = self.source[i + 1] if i + 1 < end else ""
+
+            if block_comment:
+                if c == "*" and n == "/":
+                    block_comment = False
+                    i += 2
+                    continue
+                i += 1
+                continue
+
+            if quote:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == quote:
+                    quote = None
+                i += 1
+                continue
+
+            if c == "/" and n == "/":
+                newline = self.source.find("\n", i)
+                i = end if newline < 0 else newline + 1
+                continue
+
+            if c == "/" and n == "*":
+                block_comment = True
+                i += 2
+                continue
+
+            if c in ("'", '"'):
+                quote = c
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+
+            i += 1
+
+        return depth
+
+    def test_inline_components_are_inside_root_panel(self):
+        for name in (
+            "ConnectedRackRow",
+            "WorkbenchDeviceCard",
+            "WorkbenchSlot",
+        ):
+            self.assertEqual(
+                self.brace_depth_before("component " + name + ":"),
+                1,
+                name,
+            )
+
+
+class CloneUiContentContainmentContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def object_block_for_id(self, object_id):
+        marker = "id: " + object_id
+        marker_index = self.source.find(marker)
+        self.assertGreaterEqual(marker_index, 0)
+
+        open_index = self.source.rfind("{", 0, marker_index)
+        self.assertGreaterEqual(open_index, 0)
+
+        depth = 0
+        quote = None
+        escape = False
+        i = open_index
+
+        while i < len(self.source):
+            c = self.source[i]
+
+            if quote:
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == quote:
+                    quote = None
+            else:
+                if c in ("'", '"'):
+                    quote = c
+                elif c == "{":
+                    depth += 1
+                elif c == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return self.source[open_index:i + 1]
+
+            i += 1
+
+        self.fail("object block did not close")
+
+    def test_content_column_owns_all_visible_sections(self):
+        block = self.object_block_for_id("content")
+
+        for required in (
+            "id: workbenchGrid",
+            "id: connectedRack",
+            "id: offlineSection",
+            "id: defaultsFooter",
+        ):
+            self.assertIn(required, block)
+
+
 if __name__ == "__main__":
     unittest.main()

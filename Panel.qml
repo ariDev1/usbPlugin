@@ -998,7 +998,6 @@ Panel {
                 : workbenchGrid.width
             }
           }
-          }
 
           Column {
             visible: root.rackDevices.length > 0
@@ -1699,6 +1698,7 @@ Panel {
       onClicked: root.copy(root.devicePath(deviceColumn.modelData))
     }
 
+  }
   }
 
   component WorkbenchSlot: Column {
