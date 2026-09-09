@@ -25,6 +25,10 @@ Panel {
   property bool cloneProbeBusy: false
   property var cloneProbeResults: ({})
   property var cloneProbeErrors: ({})
+  property string cloneReadKey: ""
+  property bool cloneReadBusy: false
+  property var cloneReadResult: null
+  property string cloneReadError: ""
   readonly property bool wideMode: root.devices.length >= 2
   readonly property int compactPanelWidth: Style.space(380)
   readonly property int widePanelWidth: Style.space(760)
@@ -209,7 +213,7 @@ Panel {
 
   function canSelectCloneSource(device) {
     var key = root.cloneIdentityKey(device)
-    return key !== "" && key !== root.cloneTargetKey
+    return !root.cloneReadBusy && key !== "" && key !== root.cloneTargetKey
   }
 
   function canSelectCloneTarget(device) {
@@ -220,7 +224,9 @@ Panel {
   function toggleCloneSource(device) {
     var key = root.cloneIdentityKey(device)
     if (key === "" || !root.canSelectCloneSource(device)) return
-    root.cloneSourceKey = root.cloneSourceKey === key ? "" : key
+    var nextKey = root.cloneSourceKey === key ? "" : key
+    if (nextKey !== root.cloneSourceKey) root.clearCloneReadEvidence()
+    root.cloneSourceKey = nextKey
   }
 
   function toggleCloneTarget(device) {
@@ -231,7 +237,8 @@ Panel {
 
   function cloneProbeEligible(device) {
     if (!root.isCloneSelected(device)) return false
-    return device.connected
+    return !root.cloneReadBusy
+      && device.connected
       && device.serialAvailable
       && device.readable
       && device.writable
@@ -246,6 +253,82 @@ Panel {
   function cloneProbeErrorFor(device) {
     var key = String(device && device.identityKey || "")
     return key !== "" ? String(root.cloneProbeErrors[key] || "") : ""
+  }
+
+  function clearCloneReadEvidence() {
+    root.cloneReadResult = null
+    root.cloneReadError = ""
+  }
+
+  function cloneSourceReadEligible(device) {
+    var key = root.cloneIdentityKey(device)
+    if (key === "" || key !== root.cloneSourceKey) return false
+    return !root.cloneReadBusy
+      && !root.cloneProbeBusy
+      && device.connected
+      && device.serialAvailable
+      && device.readable
+      && device.writable
+      && !device.locked
+  }
+
+  function startCloneSourceRead(device) {
+    var key = root.cloneIdentityKey(device)
+    if (key === "" || !root.cloneSourceReadEligible(device)) return
+    root.clearCloneReadEvidence()
+    root.cloneReadKey = key
+    root.cloneReadBusy = true
+    cloneReadProc.command = ["python3", root.cloneBackendPath, "read-source", "--identity-key", key]
+    cloneReadProc.running = true
+  }
+
+  function validCloneSha256(value) {
+    return /^[0-9a-f]{64}$/.test(String(value || ""))
+  }
+
+  function finishCloneSourceRead(raw) {
+    var key = root.cloneReadKey
+    if (key === "") return
+
+    if (root.cloneSourceKey !== key) {
+      root.cloneReadKey = ""
+      root.cloneReadBusy = false
+      root.clearCloneReadEvidence()
+      return
+    }
+
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+      if (!parsed || parsed.operation !== "read-source") throw new Error("invalid operation")
+      if (parsed.status === "pass") {
+        var size = Number(parsed.imageSize || 0)
+        var sha256 = String(parsed.sha256 || "").toLowerCase()
+        if (String(parsed.identityKey || "") !== key
+            || size <= 0
+            || Math.floor(size) !== size
+            || !root.validCloneSha256(sha256))
+          throw new Error("invalid read evidence")
+        root.cloneReadResult = { identityKey: key, imageSize: size, sha256: sha256 }
+        root.cloneReadError = ""
+      } else {
+        root.cloneReadResult = null
+        root.cloneReadError = String(parsed.reason || "read-source-failed")
+      }
+    } catch (error) {
+      root.cloneReadResult = null
+      root.cloneReadError = "invalid-read-result"
+    }
+
+    root.cloneReadKey = ""
+    root.cloneReadBusy = false
+  }
+
+  function cloneReadSizeLabel(result) {
+    if (!result) return ""
+    var size = Number(result.imageSize || 0)
+    if (size > 0 && size % (1024 * 1024) === 0)
+      return String(size / (1024 * 1024)) + " MiB"
+    return size > 0 ? String(size) + " B" : ""
   }
 
   function setCloneProbeEvidence(key, probe, errorText) {
@@ -273,8 +356,10 @@ Panel {
       if (key !== "") connected[key] = true
     }
 
-    if (root.cloneSourceKey !== "" && !connected[root.cloneSourceKey])
+    if (root.cloneSourceKey !== "" && !connected[root.cloneSourceKey]) {
       root.cloneSourceKey = ""
+      root.clearCloneReadEvidence()
+    }
     if (root.cloneTargetKey !== "" && !connected[root.cloneTargetKey])
       root.cloneTargetKey = ""
 
@@ -528,6 +613,18 @@ Panel {
     }
   }
 
+  Process {
+    id: cloneReadProc
+    command: []
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.finishCloneSourceRead(text)
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+    }
+  }
+
   Timer {
     interval: root.opened ? 1000 : 2500
     repeat: true
@@ -754,11 +851,33 @@ Panel {
                         : "Select SOURCE or TARGET first"
                       onActivated: root.startCloneProbe(deviceColumn.modelData)
                     }
+
+                    CloneActionButton {
+                      label: root.cloneReadBusy
+                        && root.cloneReadKey === root.cloneIdentityKey(deviceColumn.modelData)
+                        ? "READING" : "READ SOURCE"
+                      enabled: root.cloneSourceReadEligible(deviceColumn.modelData)
+                      tooltipText: root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
+                        ? "Read complete SOURCE flash · board resets"
+                        : "Select SOURCE first"
+                      onActivated: root.startCloneSourceRead(deviceColumn.modelData)
+                    }
                   }
 
                   Text {
                     visible: cloneActions.visible
                     text: "PROBE RESETS BOARD"
+                    color: root.bar.urgent
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: true
+                    font.letterSpacing: 1.0
+                  }
+
+                  Text {
+                    visible: cloneActions.visible
+                      && root.cloneSourceKey === root.cloneIdentityKey(deviceColumn.modelData)
+                    text: "READ SOURCE · RESETS BOARD"
                     color: root.bar.urgent
                     font.family: root.bar.fontFamily
                     font.pixelSize: Style.font.caption
@@ -772,12 +891,20 @@ Panel {
                     spacing: Style.space(1)
                     readonly property var evidence: root.cloneProbeResultFor(deviceColumn.modelData)
                     readonly property string probeError: root.cloneProbeErrorFor(deviceColumn.modelData)
+                    readonly property var readResult: root.cloneReadResult
+                      && root.cloneReadResult.identityKey === String(deviceColumn.modelData.identityKey || "")
+                      ? root.cloneReadResult : null
+                    readonly property string readError: root.cloneSourceKey === String(deviceColumn.modelData.identityKey || "")
+                      ? root.cloneReadError : ""
                     readonly property string identityKey: String(deviceColumn.modelData.identityKey || "")
                     visible: evidence !== null
                       || probeError !== ""
+                      || readResult !== null
+                      || readError !== ""
                       || root.cloneSourceKey === identityKey
                       || root.cloneTargetKey === identityKey
                       || (root.cloneProbeBusy && root.cloneProbeKey === identityKey)
+                      || (root.cloneReadBusy && root.cloneReadKey === identityKey)
 
                     Text {
                       visible: root.cloneProbeBusy && root.cloneProbeKey === cloneEvidence.identityKey
@@ -829,6 +956,79 @@ Panel {
                       font.pixelSize: Style.font.caption
                       font.bold: true
                       font.letterSpacing: 1.0
+                    }
+
+                    Text {
+                      visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey
+                      text: "SOURCE READ · RUNNING"
+                      color: root.bar.foreground
+                      opacity: 0.65
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                    }
+
+                    Item {
+                      id: sourceReadProgress
+                      visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey
+                      width: parent.width
+                      height: Style.space(2)
+                      clip: true
+
+                      Rectangle {
+                        anchors.fill: parent
+                        color: root.bar.foreground
+                        opacity: 0.10
+                      }
+
+                      Rectangle {
+                        id: sourceReadProgressSegment
+                        width: Math.max(Style.space(42), sourceReadProgress.width * 0.22)
+                        height: parent.height
+                        color: root.bar.foreground
+                        opacity: 0.55
+
+                        NumberAnimation on x {
+                          running: sourceReadProgress.visible
+                          loops: Animation.Infinite
+                          from: -sourceReadProgressSegment.width
+                          to: sourceReadProgress.width
+                          duration: 1100
+                          easing.type: Easing.Linear
+                        }
+                      }
+                    }
+
+                    Text {
+                      visible: cloneEvidence.readError !== ""
+                      text: "SOURCE READ FAILED · " + cloneEvidence.readError
+                      color: root.bar.urgent
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      elide: Text.ElideRight
+                      width: parent.width
+                    }
+
+                    Text {
+                      visible: cloneEvidence.readResult !== null
+                      text: "SOURCE READ PASS · " + root.cloneReadSizeLabel(cloneEvidence.readResult)
+                      color: root.bar.foreground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      font.bold: true
+                      font.letterSpacing: 1.0
+                    }
+
+                    Text {
+                      visible: cloneEvidence.readResult !== null
+                      text: "SHA-256 " + (cloneEvidence.readResult ? cloneEvidence.readResult.sha256 : "")
+                      color: root.bar.foreground
+                      opacity: 0.75
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      width: parent.width
+                      wrapMode: Text.WrapAnywhere
                     }
 
                     Text {

@@ -80,7 +80,6 @@ class CloneUiRoleProbeContractTests(unittest.TestCase):
         )
         self.assertNotIn('"esptool"', self.source)
         self.assertNotIn('"espefuse"', self.source)
-        self.assertNotIn('"read-source"', self.source)
 
     def test_probe_requires_selected_connected_role(self):
         self.assertIn("function cloneProbeEligible(device)", self.source)
@@ -105,6 +104,115 @@ class CloneUiRoleProbeContractTests(unittest.TestCase):
         self.assertIn('if (root.cloneSourceKey !== "" && !connected[root.cloneSourceKey])', self.source)
         self.assertIn('if (root.cloneTargetKey !== "" && !connected[root.cloneTargetKey])', self.source)
         self.assertIn("root.cloneProbeResults = results", self.source)
+
+
+class CloneUiSourceReadContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_source_read_state_is_runtime_only(self):
+        self.assertIn('property string cloneReadKey: ""', self.source)
+        self.assertIn('property bool cloneReadBusy: false', self.source)
+        self.assertIn('property var cloneReadResult: null', self.source)
+        self.assertIn('property string cloneReadError: ""', self.source)
+        self.assertNotIn('persistSettings({ cloneRead', self.source)
+        self.assertNotIn('persistDeviceProfile(device, { cloneRead', self.source)
+
+    def test_source_read_requires_current_connected_source(self):
+        block = self.function_block(
+            "cloneSourceReadEligible(device)",
+            "startCloneSourceRead(device)",
+        )
+        self.assertIn('key !== root.cloneSourceKey', block)
+        self.assertIn('device.connected', block)
+        self.assertIn('device.serialAvailable', block)
+        self.assertIn('device.readable', block)
+        self.assertIn('device.writable', block)
+        self.assertIn('!device.locked', block)
+        self.assertNotIn('cloneProbeResultFor', block)
+
+    def test_source_read_uses_backend_identity_key_only(self):
+        self.assertIn(
+            '["python3", root.cloneBackendPath, "read-source", "--identity-key", key]',
+            self.source,
+        )
+        self.assertNotIn('"esptool"', self.source)
+        self.assertNotIn('"espefuse"', self.source)
+
+    def test_probe_and_source_read_cannot_run_together(self):
+        read_block = self.function_block(
+            "cloneSourceReadEligible(device)",
+            "startCloneSourceRead(device)",
+        )
+        probe_block = self.function_block(
+            "cloneProbeEligible(device)",
+            "cloneProbeResultFor(device)",
+        )
+        self.assertIn('!root.cloneProbeBusy', read_block)
+        self.assertIn('!root.cloneReadBusy', probe_block)
+
+    def test_source_read_reset_warning_is_explicit(self):
+        self.assertIn('READ SOURCE · RESETS BOARD', self.source)
+        self.assertIn('label: root.cloneReadBusy', self.source)
+        self.assertIn('"READ SOURCE"', self.source)
+
+    def test_source_read_result_is_strictly_validated(self):
+        self.assertIn('function validCloneSha256(value)', self.source)
+        self.assertIn('parsed.operation !== "read-source"', self.source)
+        self.assertIn('String(parsed.identityKey || "") !== key', self.source)
+        self.assertIn('Math.floor(size) !== size', self.source)
+        self.assertIn('!root.validCloneSha256(sha256)', self.source)
+
+    def test_source_read_ui_shows_size_and_full_sha256_only(self):
+        self.assertIn('SOURCE READ PASS · ', self.source)
+        self.assertIn('SHA-256 ', self.source)
+        self.assertIn('root.cloneReadSizeLabel(cloneEvidence.readResult)', self.source)
+        self.assertIn('cloneEvidence.readResult.sha256', self.source)
+        for forbidden in ('parsed.imagePath', 'parsed.rawPath', 'parsed.transactionDir'):
+            self.assertNotIn(forbidden, self.source)
+
+    def test_source_read_has_dedicated_process_and_finish_handler(self):
+        self.assertIn('id: cloneReadProc', self.source)
+        self.assertIn('onStreamFinished: root.finishCloneSourceRead(text)', self.source)
+        self.assertIn('function finishCloneSourceRead(raw)', self.source)
+
+    def test_source_change_or_disconnect_invalidates_read_evidence(self):
+        toggle_block = self.function_block(
+            "toggleCloneSource(device)",
+            "toggleCloneTarget(device)",
+        )
+        self.assertIn('root.clearCloneReadEvidence()', toggle_block)
+        self.assertIn('root.clearCloneReadEvidence()', self.source)
+        self.assertIn('if (root.cloneSourceKey !== "" && !connected[root.cloneSourceKey]) {', self.source)
+
+
+class CloneUiSourceReadProgressContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def test_running_source_read_has_indeterminate_activity_indicator(self):
+        start = self.source.find("id: sourceReadProgress")
+        self.assertGreaterEqual(start, 0)
+        end = self.source.find("visible: cloneEvidence.readError", start)
+        self.assertGreater(end, start)
+        block = self.source[start:end]
+        self.assertIn(
+            "visible: root.cloneReadBusy && root.cloneReadKey === cloneEvidence.identityKey",
+            block,
+        )
+        self.assertIn("NumberAnimation on x", block)
+        self.assertIn("loops: Animation.Infinite", block)
+        self.assertNotIn("value:", block)
+        self.assertNotIn("%", block)
 
 
 if __name__ == "__main__":
