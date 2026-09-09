@@ -54,7 +54,38 @@ Panel {
   readonly property var projectedOfflineDevices: devices.filter(function(device) {
     return !device.connected
   })
-  readonly property var offlinePanelDevices: projectedOfflineDevices
+
+  readonly property var workbenchLeftDevice:
+    root.deviceForIdentity(root.workbenchLeftKey)
+
+  readonly property var workbenchRightDevice:
+    root.deviceForIdentity(root.workbenchRightKey)
+
+  readonly property var rackDevices: {
+    var out = root.connectedPanelDevices.filter(function(device) {
+      var key = String(device.identityKey || "")
+      return key !== ""
+        && key !== root.workbenchLeftKey
+        && key !== root.workbenchRightKey
+    })
+
+    out.sort(function(a, b) {
+      var ak = String(a.identityKey || "")
+      var bk = String(b.identityKey || "")
+      return ak < bk ? -1 : (ak > bk ? 1 : 0)
+    })
+
+    return out
+  }
+
+  readonly property var offlinePanelDevices:
+    root.projectedOfflineDevices.filter(function(device) {
+      var key = String(device.identityKey || "")
+      return key === ""
+        || (key !== root.workbenchLeftKey
+          && key !== root.workbenchRightKey)
+    })
+
   readonly property bool offlineVisible:
     root.connectedPanelDevices.length === 0 || root.offlineFoldOpen
   readonly property int navigationDeviceCount:
@@ -328,6 +359,14 @@ Panel {
       if (root.workbenchLeftKey === key) return
       root.workbenchRightKey = key
     }
+  }
+
+  function workbenchCloneRole(device) {
+    var key = String(device && device.identityKey || "")
+    if (key === "") return ""
+    if (key === root.cloneSourceKey) return "SOURCE"
+    if (key === root.cloneTargetKey) return "TARGET"
+    return ""
   }
 
   function cloneIdentityKey(device) {

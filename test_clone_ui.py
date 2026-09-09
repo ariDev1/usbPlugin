@@ -510,5 +510,67 @@ class CloneUiWorkbenchStateContractTests(unittest.TestCase):
         self.assertIn("reconcileWorkbenchSlots()", block)
 
 
+class CloneUiWorkbenchModelContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def test_workbench_device_models_resolve_by_identity(self):
+        self.assertIn(
+            "readonly property var workbenchLeftDevice:",
+            self.source,
+        )
+        self.assertIn(
+            "readonly property var workbenchRightDevice:",
+            self.source,
+        )
+        self.assertIn(
+            "root.deviceForIdentity(root.workbenchLeftKey)",
+            self.normalized,
+        )
+        self.assertIn(
+            "root.deviceForIdentity(root.workbenchRightKey)",
+            self.normalized,
+        )
+
+    def test_rack_excludes_both_active_identities(self):
+        self.assertIn("readonly property var rackDevices:", self.source)
+        self.assertIn(
+            "key !== root.workbenchLeftKey",
+            self.normalized,
+        )
+        self.assertIn(
+            "key !== root.workbenchRightKey",
+            self.normalized,
+        )
+
+    def test_offline_list_excludes_reserved_workbench_identities(self):
+        self.assertIn(
+            "readonly property var offlinePanelDevices:",
+            self.source,
+        )
+        self.assertIn(
+            "root.projectedOfflineDevices.filter",
+            self.normalized,
+        )
+        self.assertIn(
+            "key !== root.workbenchLeftKey",
+            self.normalized,
+        )
+        self.assertIn(
+            "key !== root.workbenchRightKey",
+            self.normalized,
+        )
+
+    def test_clone_role_badge_is_derived_without_mutation(self):
+        self.assertIn(
+            "function workbenchCloneRole(device)",
+            self.source,
+        )
+        self.assertIn('return "SOURCE"', self.source)
+        self.assertIn('return "TARGET"', self.source)
+
+
 if __name__ == "__main__":
     unittest.main()
