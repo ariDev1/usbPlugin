@@ -165,5 +165,136 @@ class DevelopmentGuardTests(unittest.TestCase):
                 )
 
 
+class InstallerCopyContractTests(unittest.TestCase):
+    RUNTIME_FILES = (
+        "manifest.json",
+        "Panel.qml",
+        "ProfileStore.js",
+        "usb_boards.py",
+        "serial_monitor.py",
+        "usb_clone.py",
+        "clone_policy.py",
+        "clone_probe.py",
+    )
+
+    def test_installer_copies_complete_runtime_set(self):
+        source = Path("install.sh").read_text()
+        for name in self.RUNTIME_FILES:
+            self.assertIn(name, source)
+
+        self.assertNotIn("ln -s", source)
+        self.assertNotIn("ln -sfn", source)
+
+
+class DevelopmentCopyGuardTests(unittest.TestCase):
+    RUNTIME_FILES = (
+        "manifest.json",
+        "Panel.qml",
+        "ProfileStore.js",
+        "usb_boards.py",
+        "serial_monitor.py",
+        "usb_clone.py",
+        "clone_policy.py",
+        "clone_probe.py",
+    )
+
+    def write_runtime_files(self, directory, *, prefix="same"):
+        directory.mkdir(parents=True, exist_ok=True)
+        for name in self.RUNTIME_FILES:
+            (directory / name).write_bytes(
+                (prefix + ":" + name + "\\n").encode("utf-8")
+            )
+
+    def environment(self, root):
+        return {
+            "XDG_CONFIG_HOME": str(root / "config"),
+            "HOME": str(root),
+        }
+
+    def plugin_dir(self, root):
+        return (
+            root
+            / "config"
+            / "omarchy"
+            / "plugins"
+            / "dev.usb-boards"
+        )
+
+    def test_exact_runtime_copy_is_accepted(self):
+        acceptance = load_module()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            plugin = self.plugin_dir(root)
+
+            self.write_runtime_files(project)
+            self.write_runtime_files(plugin)
+
+            acceptance.ensure_active_plugin_checkout(
+                project,
+                self.environment(root),
+            )
+
+    def test_missing_runtime_file_is_rejected_explicitly(self):
+        acceptance = load_module()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            plugin = self.plugin_dir(root)
+
+            self.write_runtime_files(project)
+            self.write_runtime_files(plugin)
+            (plugin / "clone_probe.py").unlink()
+
+            with self.assertRaisesRegex(
+                acceptance.AcceptanceError,
+                r"active plugin runtime file missing: clone_probe\.py",
+            ):
+                acceptance.ensure_active_plugin_checkout(
+                    project,
+                    self.environment(root),
+                )
+
+    def test_modified_runtime_file_is_rejected_explicitly(self):
+        acceptance = load_module()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            plugin = self.plugin_dir(root)
+
+            self.write_runtime_files(project)
+            self.write_runtime_files(plugin)
+            (plugin / "Panel.qml").write_text("modified\\n")
+
+            with self.assertRaisesRegex(
+                acceptance.AcceptanceError,
+                r"active plugin file differs from checkout: Panel\.qml",
+            ):
+                acceptance.ensure_active_plugin_checkout(
+                    project,
+                    self.environment(root),
+                )
+
+    def test_plugin_root_symlink_is_rejected(self):
+        acceptance = load_module()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            self.write_runtime_files(project)
+
+            plugin = self.plugin_dir(root)
+            plugin.parent.mkdir(parents=True, exist_ok=True)
+            plugin.symlink_to(project, target_is_directory=True)
+
+            with self.assertRaisesRegex(
+                acceptance.AcceptanceError,
+                r"active plugin must be a real directory copy",
+            ):
+                acceptance.ensure_active_plugin_checkout(
+                    project,
+                    self.environment(root),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()

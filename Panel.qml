@@ -18,6 +18,10 @@ Panel {
   property string scanError: ""
   property bool cursorActive: false
   property int selectedIndex: 0
+  property string actionDeviceKey: ""
+  property int actionIndex: 0
+  property bool actionMenuOpen: false
+  property bool actionDeviceWasConnected: false
   property string renamingKey: ""
   property string cloneSourceKey: ""
   property string cloneTargetKey: ""
@@ -175,6 +179,7 @@ Panel {
       migrateProfiles(connectedDevices)
       reconcileCloneState(connectedDevices)
       reconcileWorkbenchSlots()
+      reconcileActionState()
       if (selectedIndex >= root.navigationDeviceCount)
         selectedIndex = Math.max(0, root.navigationDeviceCount - 1)
     } catch (error) {
@@ -630,10 +635,18 @@ Panel {
     renamingKey = profileKey(device)
   }
 
+  function cancelRename() {
+    root.renamingKey = ""
+    if (root.opened)
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
   function saveNickname(device, nickname) {
     var name = String(nickname || "").trim()
     persistDeviceProfile(device, { nickname: name })
-    renamingKey = ""
+    root.renamingKey = ""
+    if (root.opened)
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
 
   function cycleDeviceBaud(device) {
@@ -755,12 +768,283 @@ Panel {
     return root.navigationDevices[index]
   }
 
+  function deviceActionKey(device) {
+    if (!device) return ""
+    return String(device.identityKey || root.profileKey(device) || "")
+  }
+
+  function selectedNavigationDevice() {
+    return root.navigationDeviceAt(root.selectedIndex)
+  }
+
+  function actionDevice() {
+    if (root.actionDeviceKey === "") return null
+
+    for (var index = 0; index < root.navigationDevices.length; index++) {
+      var device = root.navigationDevices[index]
+      if (root.deviceActionKey(device) === root.actionDeviceKey)
+        return device
+    }
+
+    return null
+  }
+
+  function actionDeviceLocation(device) {
+    if (!device) return ""
+
+    var identity = String(device.identityKey || "")
+    if (identity !== "" && identity === root.workbenchLeftKey) return "left"
+    if (identity !== "" && identity === root.workbenchRightKey) return "right"
+
+    for (var rackIndex = 0; rackIndex < root.rackDevices.length; rackIndex++) {
+      if (root.deviceActionKey(root.rackDevices[rackIndex])
+          === root.deviceActionKey(device))
+        return "rack"
+    }
+
+    for (var offlineIndex = 0;
+         offlineIndex < root.offlinePanelDevices.length;
+         offlineIndex++) {
+      if (root.deviceActionKey(root.offlinePanelDevices[offlineIndex])
+          === root.deviceActionKey(device))
+        return "offline"
+    }
+
+    return ""
+  }
+
+  function actionsForDevice(device) {
+    if (!device) return []
+
+    var location = root.actionDeviceLocation(device)
+
+    if (location === "rack") {
+      return [
+        { id: "open-left", label: "OPEN IN LEFT", enabled: root.validWorkbenchIdentity(device) !== "", active: false, note: "" },
+        { id: "open-right", label: "OPEN IN RIGHT", enabled: root.validWorkbenchIdentity(device) !== "", active: false, note: "" },
+        { id: "copy-path", label: "COPY PATH", enabled: root.devicePath(device) !== "", active: false, note: "" }
+      ]
+    }
+
+    if (location === "left" || location === "right") {
+      var serialSettingsAvailable = device.serialAvailable === true
+        || !device.connected
+      var serialActionAvailable = device.connected && device.serialAvailable
+
+      return [
+        { id: "source", label: "SOURCE", enabled: root.canSelectCloneSource(device), active: root.cloneSourceKey === root.cloneIdentityKey(device), note: "" },
+        { id: "target", label: "TARGET", enabled: root.canSelectCloneTarget(device), active: root.cloneTargetKey === root.cloneIdentityKey(device), note: "" },
+        { id: "probe", label: "PROBE", enabled: root.cloneProbeEligible(device), active: false, note: "RESETS BOARD" },
+        { id: "read-source", label: "READ SOURCE", enabled: root.cloneSourceReadEligible(device), active: false, note: "RESETS BOARD" },
+        { id: "rename", label: "RENAME", enabled: true, active: false, note: "" },
+        { id: "baud", label: "BAUD RATE", enabled: serialSettingsAvailable, active: false, note: "" },
+        { id: "line-ending", label: "LINE ENDING", enabled: serialSettingsAvailable, active: false, note: "" },
+        { id: "data-format", label: "DATA FORMAT", enabled: serialSettingsAvailable, active: false, note: "" },
+        { id: "logging", label: "SESSION LOGGING", enabled: serialSettingsAvailable, active: root.effectiveLogging(device), note: "" },
+        { id: "copy-path", label: "COPY PATH", enabled: root.devicePath(device) !== "", active: false, note: "" },
+        { id: device.readable && device.writable ? "monitor" : "grant-access", label: device.readable && device.writable ? "OPEN MONITOR" : "GRANT ACCESS", enabled: serialActionAvailable, active: false, note: "" }
+      ]
+    }
+
+    if (location === "offline") {
+      return [
+        { id: "details", label: root.expandedOfflineKey === root.profileKey(device) ? "LESS" : "DETAILS", enabled: true, active: root.expandedOfflineKey === root.profileKey(device), note: "" },
+        { id: "rename", label: "RENAME", enabled: true, active: false, note: "" },
+        { id: "baud", label: "BAUD RATE", enabled: true, active: false, note: "" },
+        { id: "line-ending", label: "LINE ENDING", enabled: true, active: false, note: "" },
+        { id: "data-format", label: "DATA FORMAT", enabled: true, active: false, note: "" },
+        { id: "logging", label: "SESSION LOGGING", enabled: true, active: root.effectiveLogging(device), note: "" }
+      ]
+    }
+
+    return []
+  }
+
+  function selectActionByDelta(delta) {
+    var device = root.actionDevice()
+    var actions = root.actionsForDevice(device)
+    if (actions.length === 0) {
+      root.closeActions()
+      return
+    }
+    root.actionIndex = Math.max(
+      0,
+      Math.min(actions.length - 1, root.actionIndex + delta)
+    )
+  }
+
+  function selectedAction() {
+    var device = root.actionDevice()
+    var actions = root.actionsForDevice(device)
+    if (root.actionIndex < 0 || root.actionIndex >= actions.length)
+      return null
+    return actions[root.actionIndex]
+  }
+
+  function openSelectedActions() {
+    var device = root.selectedNavigationDevice()
+    if (!device) return
+
+    var key = root.deviceActionKey(device)
+    if (key === "") return
+
+    var actions = root.actionsForDevice(device)
+    if (actions.length === 0) return
+
+    root.actionDeviceKey = key
+    root.actionDeviceWasConnected = device.connected === true
+    root.actionIndex = 0
+    root.actionMenuOpen = true
+  }
+
+  function closeActions() {
+    root.actionMenuOpen = false
+    root.actionDeviceKey = ""
+    root.actionDeviceWasConnected = false
+    root.actionIndex = 0
+
+    if (root.opened && root.renamingKey === "")
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  function selectDeviceIdentity(key) {
+    var wanted = String(key || "")
+    if (wanted === "") return
+
+    for (var index = 0; index < root.navigationDevices.length; index++) {
+      if (root.deviceActionKey(root.navigationDevices[index]) === wanted) {
+        root.selectedIndex = index
+        root.cursorActive = true
+        root.scrollSelectedDeviceIntoView()
+        return
+      }
+    }
+  }
+
+  function activateSelectedAction() {
+    var device = root.actionDevice()
+    var action = root.selectedAction()
+    if (!device || !action || action.enabled !== true) return
+
+    var key = root.deviceActionKey(device)
+
+    if (action.id === "open-left") {
+      root.assignWorkbenchSlot("left", device)
+      root.closeActions()
+      root.selectDeviceIdentity(key)
+    } else if (action.id === "open-right") {
+      root.assignWorkbenchSlot("right", device)
+      root.closeActions()
+      root.selectDeviceIdentity(key)
+    } else if (action.id === "source") {
+      root.toggleCloneSource(device)
+    } else if (action.id === "target") {
+      root.toggleCloneTarget(device)
+    } else if (action.id === "probe") {
+      root.startCloneProbe(device)
+      root.closeActions()
+    } else if (action.id === "read-source") {
+      root.startCloneSourceRead(device)
+      root.closeActions()
+    } else if (action.id === "rename") {
+      root.beginRename(device)
+      root.closeActions()
+    } else if (action.id === "baud") {
+      root.cycleDeviceBaud(device)
+    } else if (action.id === "line-ending") {
+      root.cycleDeviceLineEnding(device)
+    } else if (action.id === "data-format") {
+      root.cycleDeviceDataFormat(device)
+    } else if (action.id === "logging") {
+      root.toggleDeviceLogging(device)
+    } else if (action.id === "copy-path") {
+      root.copy(root.devicePath(device))
+    } else if (action.id === "monitor") {
+      root.openMonitor(device)
+    } else if (action.id === "grant-access") {
+      root.grantAccess(device)
+    } else if (action.id === "details") {
+      root.toggleOfflineDetails(device)
+    }
+  }
+
+  function navigationItemAt(index) {
+    if (index < 0 || index >= root.navigationDeviceCount) return null
+
+    var workbenchCount = root.workbenchNavigationDevices.length
+    if (index < workbenchCount) {
+      if (root.workbenchLeftDevice !== null) {
+        if (index === 0) return leftWorkbenchSlot.navigationItem
+        if (index === 1 && root.workbenchRightDevice !== null)
+          return rightWorkbenchSlot.navigationItem
+      } else if (root.workbenchRightDevice !== null && index === 0) {
+        return rightWorkbenchSlot.navigationItem
+      }
+    }
+
+    if (index >= root.rackNavigationOffset
+        && index < root.offlineNavigationOffset)
+      return connectedRackRepeater.itemAt(index - root.rackNavigationOffset)
+
+    if (root.offlineVisible && index >= root.offlineNavigationOffset)
+      return offlineRepeater.itemAt(index - root.offlineNavigationOffset)
+
+    return null
+  }
+
+  function scrollItemIntoView(item) {
+    if (!item || !deviceScroll || !deviceScroll.contentItem) return
+
+    var flick = deviceScroll.contentItem
+    if (flick.contentY === undefined || !flick.contentItem) return
+
+    var margin = Style.space(6)
+    var point = item.mapToItem(flick.contentItem, 0, 0)
+    var top = point.y
+    var bottom = top + item.height
+    var viewTop = flick.contentY
+    var viewBottom = viewTop + flick.height
+    var maxY = Math.max(0, flick.contentHeight - flick.height)
+
+    if (top < viewTop + margin)
+      flick.contentY = Math.max(0, top - margin)
+    else if (bottom > viewBottom - margin)
+      flick.contentY = Math.min(maxY, bottom + margin - flick.height)
+  }
+
+  function scrollSelectedDeviceIntoView() {
+    Qt.callLater(function() {
+      root.scrollItemIntoView(root.navigationItemAt(root.selectedIndex))
+    })
+  }
+
   function selectByDelta(delta) {
     if (root.navigationDeviceCount === 0) return
-    selectedIndex = Math.max(
+    root.selectedIndex = Math.max(
       0,
-      Math.min(root.navigationDeviceCount - 1, selectedIndex + delta)
+      Math.min(root.navigationDeviceCount - 1, root.selectedIndex + delta)
     )
+    root.scrollSelectedDeviceIntoView()
+  }
+
+  function reconcileActionState() {
+    if (!root.actionMenuOpen) return
+
+    var device = root.actionDevice()
+    if (!device
+        || (device.connected === true) !== root.actionDeviceWasConnected) {
+      root.closeActions()
+      return
+    }
+
+    var actions = root.actionsForDevice(device)
+    if (actions.length === 0) {
+      root.closeActions()
+      return
+    }
+
+    if (root.actionIndex >= actions.length)
+      root.actionIndex = actions.length - 1
   }
 
   function setOfflineFoldOpen(open) {
@@ -774,6 +1058,9 @@ Panel {
     } else if (root.selectedIndex >= root.navigationDeviceCount) {
       root.selectedIndex = root.navigationDeviceCount - 1
     }
+
+    root.reconcileActionState()
+    root.scrollSelectedDeviceIntoView()
   }
 
   function toggleOfflineDetails(device) {
@@ -794,7 +1081,23 @@ Panel {
   }
 
   Component.onCompleted: refresh()
-  onOpenedChanged: if (opened) { refresh(); cursorActive = false }
+  onOpenedChanged: {
+    if (opened) {
+      refresh()
+      cursorActive = false
+      actionDeviceKey = ""
+      actionIndex = 0
+      actionMenuOpen = false
+      actionDeviceWasConnected = false
+      renamingKey = ""
+    } else {
+      actionDeviceKey = ""
+      actionIndex = 0
+      actionMenuOpen = false
+      actionDeviceWasConnected = false
+      renamingKey = ""
+    }
+  }
 
   FileView {
     id: manifestFile
@@ -880,18 +1183,20 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      blocked: root.actionMenuOpen || root.renamingKey !== ""
       onMoveRequested: function(dx, dy) {
         if (!root.cursorActive) { root.cursorActive = true; return }
         if (dy !== 0) root.selectByDelta(dy)
       }
       onActivateRequested: {
         if (!root.cursorActive) return
-        var device = root.navigationDeviceAt(root.selectedIndex)
-        if (device) root.copy(root.devicePath(device))
+        root.openSelectedActions()
       }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
-      onTextKey: function(text) { if (text === "r" || text === "R") root.refresh() }
+      onTextKey: function(text) {
+        if (text === "r" || text === "R") root.refresh()
+      }
 
       ScrollView {
         id: deviceScroll
@@ -979,6 +1284,7 @@ Panel {
             rowSpacing: Style.space(12)
 
             WorkbenchSlot {
+              id: leftWorkbenchSlot
               slotLabel: "LEFT"
               slotKey: root.workbenchLeftKey
               modelData: root.workbenchLeftDevice
@@ -989,6 +1295,7 @@ Panel {
             }
 
             WorkbenchSlot {
+              id: rightWorkbenchSlot
               slotLabel: "RIGHT"
               slotKey: root.workbenchRightKey
               modelData: root.workbenchRightDevice
@@ -1022,6 +1329,7 @@ Panel {
               rowSpacing: Style.space(6)
 
               Repeater {
+                id: connectedRackRepeater
                 model: root.rackDevices
 
                 ConnectedRackRow {
@@ -1086,6 +1394,7 @@ Panel {
               spacing: Style.space(4)
 
               Repeater {
+                id: offlineRepeater
                 model: root.offlinePanelDevices
 
                 OfflineDeviceRow {
@@ -1103,7 +1412,8 @@ Panel {
             Text {
               id: defaultsFooter
               text: "Defaults · " + root.baudRate + " baud · " + root.lineEnding
-                + " · logs " + (root.sessionLogging ? "on" : "off") + " · R refreshes"
+                + " · logs " + (root.sessionLogging ? "on" : "off")
+                + " · ↑↓ select · Enter actions · R refreshes"
               color: Qt.darker(root.bar.foreground, 1.4)
               font.family: root.bar.fontFamily
               font.pixelSize: Style.font.caption
@@ -1127,9 +1437,19 @@ Panel {
         }
       }
     }
+
+    Item {
+      id: actionMenuHost
+      anchors.fill: parent
+      z: 20
+
+      ActionMenu {
+        id: actionMenu
+      }
+    }
   }
 
-  component ConnectedRackRow: Rectangle {
+  component ConnectedRackRow: CursorSurface {
     id: rackRow
 
     required property var modelData
@@ -1143,13 +1463,20 @@ Panel {
 
     width: parent ? parent.width : 0
     height: rackBody.implicitHeight + Style.space(12)
-    color: "transparent"
-    border.width: 1
-    border.color: root.cursorActive
+    hasCursor: root.cursorActive
       && root.selectedIndex === rackRow.navigationIndex
-      ? root.bar.foreground
-      : root.hairline
+    foreground: root.bar.foreground
+    outline: false
     radius: 0
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      onContainsMouseChanged: if (containsMouse) {
+        root.cursorActive = true
+        root.selectedIndex = rackRow.navigationIndex
+      }
+    }
 
     RowLayout {
       id: rackBody
@@ -1283,7 +1610,18 @@ Panel {
           horizontalPadding: Style.space(6)
           verticalPadding: Style.space(3)
           width: parent.width
+          onVisibleChanged: if (visible) {
+            Qt.callLater(function() {
+              nameField.forceActiveFocus()
+              nameField.selectAll()
+            })
+          }
           onAccepted: root.saveNickname(deviceColumn.modelData, text)
+          Keys.onEscapePressed: function(event) {
+            text = root.displayName(deviceColumn.modelData)
+            root.cancelRename()
+            event.accepted = true
+          }
         }
       }
       Text {
@@ -1709,6 +2047,8 @@ Panel {
     required property var modelData
     required property int navigationIndex
 
+    readonly property var navigationItem: workbenchCardLoader.item
+
     width: parent ? parent.width : 0
     spacing: Style.space(5)
 
@@ -1761,6 +2101,223 @@ Panel {
         font.pixelSize: Style.font.caption
         elide: Text.ElideMiddle
         width: parent.width
+      }
+    }
+  }
+
+  component ActionMenu: Popup {
+    id: actionMenuSurface
+
+    readonly property var device: root.actionDevice()
+    readonly property var actions: root.actionsForDevice(actionMenuSurface.device)
+    readonly property real popupMargin: Style.space(12)
+    readonly property var anchorItem:
+      root.navigationItemAt(root.selectedIndex)
+    readonly property var anchorPoint: actionMenuSurface.anchorItem
+      ? actionMenuSurface.anchorItem.mapToItem(keyCatcher, 0, 0)
+      : Qt.point(actionMenuSurface.popupMargin, actionMenuSurface.popupMargin)
+
+    parent: keyCatcher
+    visible: root.actionMenuOpen
+    focus: visible
+    modal: false
+    closePolicy: Popup.NoAutoClose
+    padding: Style.space(10)
+
+    width: Math.min(
+      Style.space(340),
+      Math.max(0, keyCatcher.width - Style.space(24))
+    )
+
+    x: Math.max(
+      actionMenuSurface.popupMargin,
+      Math.min(
+        actionMenuSurface.anchorPoint.x
+          + (actionMenuSurface.anchorItem
+            ? actionMenuSurface.anchorItem.width : 0)
+          - actionMenuSurface.width,
+        keyCatcher.width
+          - actionMenuSurface.width
+          - actionMenuSurface.popupMargin
+      )
+    )
+
+    y: Math.max(
+      actionMenuSurface.popupMargin,
+      Math.min(
+        actionMenuSurface.anchorPoint.y + Style.space(18),
+        keyCatcher.height
+          - actionMenuSurface.height
+          - actionMenuSurface.popupMargin
+      )
+    )
+
+    onVisibleChanged: if (visible) {
+      Qt.callLater(function() {
+        if (actionMenuSurface.visible)
+          actionMenuContent.forceActiveFocus()
+      })
+    }
+
+    function handleKey(event) {
+      if (event.key === Qt.Key_Escape) {
+        root.closeActions()
+        event.accepted = true
+        return
+      }
+
+      if (event.key === Qt.Key_Down || event.text === "j") {
+        root.selectActionByDelta(1)
+        event.accepted = true
+        return
+      }
+
+      if (event.key === Qt.Key_Up || event.text === "k") {
+        root.selectActionByDelta(-1)
+        event.accepted = true
+        return
+      }
+
+      if (event.key === Qt.Key_Return
+          || event.key === Qt.Key_Enter
+          || event.key === Qt.Key_Space) {
+        root.activateSelectedAction()
+        event.accepted = true
+        return
+      }
+
+      if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)
+        event.accepted = true
+    }
+
+    background: BorderSurface {
+      color: Color.background
+      borderSpec: Border.flat(root.hairline, 1)
+      radius: Style.cornerRadius
+    }
+
+    contentItem: Column {
+      id: actionMenuContent
+
+      width: actionMenuSurface.availableWidth
+      spacing: Style.space(7)
+      focus: true
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) {
+        actionMenuSurface.handleKey(event)
+      }
+
+      Text {
+        text: actionMenuSurface.device
+          ? root.displayName(actionMenuSurface.device) + " · ACTIONS"
+          : "ACTIONS"
+        color: root.bar.foreground
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.subtitle
+        font.bold: true
+        elide: Text.ElideRight
+        width: parent.width
+      }
+
+      Text {
+        text: "↑/↓ SELECT · ENTER · ESC BACK"
+        color: root.bar.foreground
+        opacity: 0.50
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 0.8
+      }
+
+      PanelSeparator {
+        width: parent.width
+        foreground: root.hairline
+      }
+
+      ScrollView {
+        id: actionScroll
+
+        width: parent.width
+        height: Math.min(actionRows.implicitHeight, Style.space(320))
+        contentWidth: availableWidth
+        clip: true
+        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+        ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+        Column {
+          id: actionRows
+
+          width: actionScroll.availableWidth
+          spacing: 0
+
+          Repeater {
+            model: actionMenuSurface.actions
+
+            CursorSurface {
+              id: actionRow
+              required property var modelData
+              required property int index
+
+              width: parent ? parent.width : 0
+              height: Style.space(28)
+              hasCursor: root.actionIndex === actionRow.index
+              current: actionRow.modelData.active === true
+              foreground: root.bar.foreground
+              outline: false
+              radius: 0
+              opacity: actionRow.modelData.enabled === true ? 1.0 : 0.55
+
+              Text {
+                text: actionRow.modelData.label
+                color: root.bar.foreground
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+                font.bold: actionRow.hasCursor || actionRow.current
+                anchors.left: parent.left
+                anchors.leftMargin: Style.space(7)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Text {
+                text: actionRow.modelData.enabled !== true
+                  ? "UNAVAILABLE"
+                  : (actionRow.modelData.active === true
+                    ? "ACTIVE" : String(actionRow.modelData.note || ""))
+                color: root.bar.foreground
+                opacity: 0.58
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: actionRow.modelData.active === true
+                anchors.right: parent.right
+                anchors.rightMargin: Style.space(7)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              MouseArea {
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: actionRow.modelData.enabled === true
+                  ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onContainsMouseChanged: if (containsMouse)
+                  root.actionIndex = actionRow.index
+                onClicked: if (actionRow.modelData.enabled === true)
+                  root.activateSelectedAction()
+              }
+            }
+          }
+        }
+      }
+
+      Text {
+        visible: actionMenuSurface.device
+          && root.cloneTargetKey === root.cloneIdentityKey(actionMenuSurface.device)
+        text: "TARGET WRITE LOCKED"
+        color: root.bar.foreground
+        opacity: 0.58
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 0.8
       }
     }
   }
@@ -1828,7 +2385,18 @@ Panel {
           anchors.left: parent.left
           anchors.right: offlineDetailsHint.left
           anchors.rightMargin: Style.space(10)
+          onVisibleChanged: if (visible) {
+            Qt.callLater(function() {
+              offlineNameField.forceActiveFocus()
+              offlineNameField.selectAll()
+            })
+          }
           onAccepted: root.saveNickname(modelData, text)
+          Keys.onEscapePressed: function(event) {
+            text = root.displayName(modelData)
+            root.cancelRename()
+            event.accepted = true
+          }
         }
 
         Text {

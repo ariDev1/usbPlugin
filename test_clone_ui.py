@@ -1040,5 +1040,407 @@ class CloneUiContentContainmentContractTests(unittest.TestCase):
             self.assertIn(required, block)
 
 
+class CloneUiKeyboardActionStateContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_contextual_action_state_is_runtime_only(self):
+        for required in (
+            'property string actionDeviceKey: ""',
+            "property int actionIndex: 0",
+            "property bool actionMenuOpen: false",
+            "property bool actionDeviceWasConnected: false",
+        ):
+            self.assertIn(required, self.source)
+
+        for forbidden in (
+            "persistSettings({ actionDevice",
+            "persistDeviceProfile(device, { actionDevice",
+            "persistSettings({ actionMenuOpen",
+        ):
+            self.assertNotIn(forbidden, self.source)
+
+    def test_selected_device_uses_existing_navigation_model(self):
+        block = self.function_block(
+            "selectedNavigationDevice()",
+            "actionDevice()",
+        )
+        self.assertIn("root.navigationDeviceAt(root.selectedIndex)", block)
+
+    def test_action_device_re_resolves_from_visible_navigation(self):
+        block = self.function_block(
+            "actionDevice()",
+            "actionDeviceLocation(device)",
+        )
+        self.assertIn("root.navigationDevices", block)
+        self.assertIn("root.deviceActionKey(device)", block)
+
+    def test_action_model_contains_required_rack_operations(self):
+        block = self.function_block(
+            "actionsForDevice(device)",
+            "selectActionByDelta(delta)",
+        )
+        for required in ('"open-left"', '"open-right"', '"copy-path"'):
+            self.assertIn(required, block)
+
+    def test_action_model_contains_required_workbench_operations(self):
+        block = self.function_block(
+            "actionsForDevice(device)",
+            "selectActionByDelta(delta)",
+        )
+        for required in (
+            '"source"', '"target"', '"probe"', '"read-source"',
+            '"rename"', '"baud"', '"line-ending"', '"data-format"',
+            '"logging"', '"monitor"', '"grant-access"',
+        ):
+            self.assertIn(required, block)
+
+    def test_action_model_contains_offline_details(self):
+        block = self.function_block(
+            "actionsForDevice(device)",
+            "selectActionByDelta(delta)",
+        )
+        self.assertIn('"details"', block)
+        self.assertIn('"LESS"', block)
+        self.assertIn('"DETAILS"', block)
+
+    def test_action_model_does_not_execute_clone_backend(self):
+        block = self.function_block(
+            "actionsForDevice(device)",
+            "selectActionByDelta(delta)",
+        )
+        self.assertNotIn("cloneBackendPath", block)
+        self.assertNotIn("cloneProbeProc", block)
+        self.assertNotIn("cloneReadProc", block)
+
+
+class CloneUiKeyboardActionDispatchContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_action_cursor_is_clamped(self):
+        block = self.function_block(
+            "selectActionByDelta(delta)",
+            "selectedAction()",
+        )
+        self.assertIn("Math.max(", block)
+        self.assertIn("Math.min(", block)
+
+    def test_dispatch_rechecks_enabled_state(self):
+        block = self.function_block(
+            "activateSelectedAction()",
+            "navigationItemAt(index)",
+        )
+        self.assertIn(
+            "if (!device || !action || action.enabled !== true) return",
+            block,
+        )
+
+    def test_slot_actions_delegate_to_existing_assignment_function(self):
+        block = self.function_block(
+            "activateSelectedAction()",
+            "navigationItemAt(index)",
+        )
+        self.assertIn('root.assignWorkbenchSlot("left", device)', block)
+        self.assertIn('root.assignWorkbenchSlot("right", device)', block)
+
+    def test_clone_actions_delegate_to_existing_guarded_functions(self):
+        block = self.function_block(
+            "activateSelectedAction()",
+            "navigationItemAt(index)",
+        )
+        for required in (
+            "root.toggleCloneSource(device)",
+            "root.toggleCloneTarget(device)",
+            "root.startCloneProbe(device)",
+            "root.startCloneSourceRead(device)",
+        ):
+            self.assertIn(required, block)
+
+    def test_profile_actions_delegate_to_existing_functions(self):
+        block = self.function_block(
+            "activateSelectedAction()",
+            "navigationItemAt(index)",
+        )
+        for required in (
+            "root.beginRename(device)",
+            "root.cycleDeviceBaud(device)",
+            "root.cycleDeviceLineEnding(device)",
+            "root.cycleDeviceDataFormat(device)",
+            "root.toggleDeviceLogging(device)",
+        ):
+            self.assertIn(required, block)
+
+    def test_no_destructive_clone_operation_is_added(self):
+        for forbidden in (
+            "write-flash", "erase-flash", "erase-region", "burn-efuse",
+        ):
+            self.assertNotIn(forbidden, self.source)
+
+
+class CloneUiKeyboardRoutingContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        start = cls.source.find("PanelKeyCatcher {")
+        end = cls.source.find("ScrollView {", start)
+        cls.block = " ".join(cls.source[start:end].split())
+
+    def test_main_key_catcher_is_blocked_for_submodes(self):
+        self.assertIn(
+            'blocked: root.actionMenuOpen || root.renamingKey !== ""',
+            self.block,
+        )
+
+    def test_enter_opens_contextual_actions(self):
+        self.assertIn("root.openSelectedActions()", self.block)
+        self.assertNotIn("root.copy(root.devicePath(device))", self.block)
+
+    def test_vertical_navigation_still_uses_existing_device_cursor(self):
+        self.assertIn("root.selectByDelta(dy)", self.block)
+
+    def test_refresh_remains_r(self):
+        self.assertIn('text === "r" || text === "R"', self.block)
+        self.assertIn("root.refresh()", self.block)
+
+    def test_no_direct_clone_letter_binding_is_added(self):
+        for forbidden in (
+            'text === "p"', 'text === "P"', 'text === "s"',
+            'text === "S"', 'text === "t"', 'text === "T"',
+        ):
+            self.assertNotIn(forbidden, self.block)
+
+
+class CloneUiKeyboardActionSurfaceContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def component_block(self, name, next_name):
+        start = self.source.find("component " + name + ":")
+        if start < 0:
+            return ""
+        end = self.source.find("component " + next_name + ":", start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_action_menu_is_explicit_transient_component(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertNotEqual(block, "")
+        self.assertIn("component ActionMenu: Popup", block)
+        self.assertIn("parent: keyCatcher", block)
+        self.assertIn("visible: root.actionMenuOpen", block)
+        self.assertIn("focus: visible", block)
+        self.assertIn("background: BorderSurface", block)
+        self.assertIn("borderSpec: Border.flat(root.hairline, 1)", block)
+
+    def test_action_menu_has_compact_bounded_geometry(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn("Style.space(340)", block)
+        self.assertIn("actionMenuSurface.anchorPoint.x", block)
+        self.assertIn("actionMenuSurface.anchorPoint.y", block)
+        self.assertIn(
+            "height: Math.min(actionRows.implicitHeight, Style.space(320))",
+            block,
+        )
+        self.assertIn("height: Style.space(28)", block)
+        self.assertNotIn("anchors.fill: parent", block.split("contentItem:", 1)[0])
+
+    def test_action_menu_uses_omarchy_dark_surface(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn("background: BorderSurface", block)
+        self.assertIn("color: Color.background", block)
+        self.assertIn("padding: Style.space(10)", block)
+
+    def test_disabled_actions_remain_legible(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn(
+            "opacity: actionRow.modelData.enabled === true ? 1.0 : 0.55",
+            block,
+        )
+
+    def test_popup_instance_is_hosted_by_quick_item(self):
+        expected = (
+            "    Item {\n"
+            "      id: actionMenuHost\n"
+            "      anchors.fill: parent\n"
+            "      z: 20\n"
+            "\n"
+            "      ActionMenu {\n"
+            "        id: actionMenu\n"
+            "      }\n"
+            "    }\n"
+        )
+        self.assertIn(expected, self.source)
+
+    def test_action_menu_identifies_selected_device(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn('root.displayName(actionMenuSurface.device) + " · ACTIONS"', block)
+
+    def test_action_cursor_and_active_state_are_separate(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn("hasCursor: root.actionIndex === actionRow.index", block)
+        self.assertIn("current: actionRow.modelData.active === true", block)
+
+    def test_disabled_action_has_explicit_feedback(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn('? "UNAVAILABLE"', block)
+        self.assertNotIn("UNAVAILABLE IN CURRENT STATE", block)
+
+    def test_resetting_clone_operations_are_explicit(self):
+        action_start = self.source.find("function actionsForDevice(device)")
+        action_end = self.source.find("function selectActionByDelta(delta)", action_start)
+        self.assertGreaterEqual(action_start, 0)
+        self.assertGreater(action_end, action_start)
+        action_block = self.source[action_start:action_end]
+        self.assertIn('note: "RESETS BOARD"', action_block)
+
+        menu_block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn("modelData.note", menu_block)
+
+    def test_action_menu_handles_escape_and_activation(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn("Qt.Key_Escape", block)
+        self.assertIn("root.closeActions()", block)
+        self.assertIn("root.activateSelectedAction()", block)
+
+
+class CloneUiKeyboardRenameContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def test_cancel_rename_is_explicit(self):
+        self.assertIn("function cancelRename()", self.source)
+        self.assertIn('root.renamingKey = ""', self.source)
+
+    def test_both_name_fields_handle_escape(self):
+        self.assertGreaterEqual(self.source.count("Keys.onEscapePressed:"), 2)
+
+    def test_both_name_fields_take_focus_when_shown(self):
+        self.assertIn("nameField.forceActiveFocus()", self.source)
+        self.assertIn("offlineNameField.forceActiveFocus()", self.source)
+
+    def test_focus_returns_to_main_catcher_after_edit(self):
+        self.assertIn("keyCatcher.forceActiveFocus()", self.source)
+
+
+class CloneUiKeyboardScrollContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_device_selection_scrolls_into_view(self):
+        block = self.function_block(
+            "selectByDelta(delta)",
+            "reconcileActionState()",
+        )
+        self.assertIn("root.scrollSelectedDeviceIntoView()", block)
+
+    def test_visual_lookup_uses_existing_sections(self):
+        block = self.function_block(
+            "navigationItemAt(index)",
+            "scrollItemIntoView(item)",
+        )
+        for required in (
+            "leftWorkbenchSlot.navigationItem",
+            "rightWorkbenchSlot.navigationItem",
+            "connectedRackRepeater.itemAt",
+            "offlineRepeater.itemAt",
+        ):
+            self.assertIn(required, block)
+
+    def test_scroll_uses_scrollview_flickable(self):
+        block = self.function_block(
+            "scrollItemIntoView(item)",
+            "scrollSelectedDeviceIntoView()",
+        )
+        self.assertIn("deviceScroll.contentItem", block)
+        self.assertIn("flick.contentY", block)
+
+    def test_identity_selection_uses_current_navigation_model(self):
+        block = self.function_block(
+            "selectDeviceIdentity(key)",
+            "activateSelectedAction()",
+        )
+        self.assertIn("root.navigationDevices", block)
+        self.assertIn("root.selectedIndex =", block)
+        self.assertIn("root.scrollSelectedDeviceIntoView()", block)
+
+
+class CloneUiKeyboardStaleActionContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_refresh_reconciles_action_state(self):
+        block = self.function_block("updateDevices(raw)", "copy(value)")
+        self.assertIn("reconcileActionState()", block)
+
+    def test_connected_device_disconnect_closes_actions(self):
+        block = self.function_block(
+            "reconcileActionState()",
+            "setOfflineFoldOpen(open)",
+        )
+        self.assertIn(
+            "(device.connected === true) !== root.actionDeviceWasConnected",
+            block,
+        )
+        self.assertIn("root.closeActions()", block)
+
+    def test_panel_lifecycle_clears_transient_action_state(self):
+        self.assertIn("onOpenedChanged: {", self.source)
+        self.assertIn('actionDeviceKey = ""', self.source)
+        self.assertIn("actionMenuOpen = false", self.source)
+
+
+class CloneUiKeyboardRackCursorContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def test_rack_uses_shared_cursor_surface(self):
+        start = self.source.find("component ConnectedRackRow:")
+        end = self.source.find("component WorkbenchDeviceCard:", start)
+        self.assertGreaterEqual(start, 0)
+        self.assertGreater(end, start)
+        block = self.source[start:end]
+        self.assertIn("component ConnectedRackRow: CursorSurface", block)
+        self.assertIn("root.selectedIndex === rackRow.navigationIndex", block)
+        self.assertIn("onContainsMouseChanged: if (containsMouse)", block)
+        self.assertIn("root.selectedIndex = rackRow.navigationIndex", block)
+        self.assertNotIn("border.color: root.cursorActive", block)
+
+
 if __name__ == "__main__":
     unittest.main()

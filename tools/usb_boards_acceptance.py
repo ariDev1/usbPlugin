@@ -15,6 +15,16 @@ from typing import Callable, Mapping, Sequence
 
 PLUGIN_ID = "dev.usb-boards"
 EXPECTED_BRANCH = "development"
+RUNTIME_FILES = (
+    "manifest.json",
+    "Panel.qml",
+    "ProfileStore.js",
+    "usb_boards.py",
+    "serial_monitor.py",
+    "usb_clone.py",
+    "clone_policy.py",
+    "clone_probe.py",
+)
 IDENTITY_FIELDS = (
     "identityKey",
     "identityEvidence",
@@ -136,15 +146,41 @@ def ensure_active_plugin_checkout(
         Path(env.get("HOME", "~")).expanduser() / ".config"
     )
     plugin_dir = Path(config_home) / "omarchy" / "plugins" / PLUGIN_ID
-    if not plugin_dir.exists():
-        raise AcceptanceError(f"active plugin path does not exist: {plugin_dir}")
-    try:
-        active = plugin_dir.resolve(strict=True)
-        expected = project_dir.resolve(strict=True)
-    except OSError as error:
-        raise AcceptanceError("could not resolve active plugin checkout") from error
-    if active != expected:
-        raise AcceptanceError(f"active plugin resolves to {active}, expected {expected}")
+
+    if plugin_dir.is_symlink():
+        raise AcceptanceError(
+            f"active plugin must be a real directory copy: {plugin_dir}"
+        )
+    if not plugin_dir.is_dir():
+        raise AcceptanceError(
+            f"active plugin path does not exist: {plugin_dir}"
+        )
+
+    for name in RUNTIME_FILES:
+        checkout_file = project_dir / name
+        active_file = plugin_dir / name
+
+        if not checkout_file.is_file():
+            raise AcceptanceError(
+                f"checkout runtime file missing: {name}"
+            )
+        if active_file.is_symlink() or not active_file.is_file():
+            raise AcceptanceError(
+                f"active plugin runtime file missing: {name}"
+            )
+
+        try:
+            checkout_bytes = checkout_file.read_bytes()
+            active_bytes = active_file.read_bytes()
+        except OSError as error:
+            raise AcceptanceError(
+                f"could not read runtime file for comparison: {name}"
+            ) from error
+
+        if active_bytes != checkout_bytes:
+            raise AcceptanceError(
+                f"active plugin file differs from checkout: {name}"
+            )
 
 
 def _read_runtime_state(

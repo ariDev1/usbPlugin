@@ -3,6 +3,16 @@ set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 plugin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/plugins/dev.usb-boards"
+runtime_files=(
+  manifest.json
+  Panel.qml
+  ProfileStore.js
+  usb_boards.py
+  serial_monitor.py
+  usb_clone.py
+  clone_policy.py
+  clone_probe.py
+)
 
 # The shell rejects symlinks inside ~/.config/omarchy/plugins/, so install
 # a real copy instead of linking back to the checkout.
@@ -11,7 +21,9 @@ if [[ -L "$plugin_dir" ]]; then
 fi
 
 mkdir -p "$plugin_dir"
-cp "$project_dir/manifest.json" "$project_dir/Panel.qml" "$project_dir/ProfileStore.js" "$project_dir/usb_boards.py" "$project_dir/serial_monitor.py" "$project_dir/usb_clone.py" "$plugin_dir/"
+for runtime_file in "${runtime_files[@]}"; do
+  cp -- "$project_dir/$runtime_file" "$plugin_dir/$runtime_file"
+done
 omarchy plugin validate "$plugin_dir"
 omarchy-shell shell rescanPlugins
 
