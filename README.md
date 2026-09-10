@@ -32,7 +32,7 @@ To place the enabled widget in the right bar section:
 omarchy bar move dev.usb-boards --section right
 ```
 
-For local development, `install.sh` links the current checkout into the Omarchy
+For local development, `install.sh` copies the current checkout into the Omarchy
 plugin directory and adds it to the bar:
 
 ```bash
