@@ -110,6 +110,11 @@ The current validated clone families are:
 - `esp32-classic-spi-flash`: full raw SPI flash clone for validated profiles
 - `avr-stk500v1-serial`: 32 KiB serial flash access through STK500v1
 
+Host clone support uses open-source command-line tools only: `esptool`,
+`espefuse`, and `avrdude`. ESP32 uses the Espressif tools. AVR uses `avrdude`.
+USB Boards does not install these tools or access a board during host preflight.
+Run `python3 usb_clone.py preflight` to check host readiness.
+
 The AVR path writes only the application region `0x0000-0x7dff`. It preserves
 and validates the bootloader region `0x7e00-0x7fff`. It does not clone EEPROM,
 fuses, lock bits, calibration data, or factory identity.
@@ -161,7 +166,7 @@ Run the source-level checks from the repository root:
 ```bash
 node test_profile_store.js
 python3 -m unittest -v
-python3 -m py_compile usb_boards.py serial_monitor.py clone_probe.py clone_policy.py usb_clone.py avr_clone.py tools/usb_boards_acceptance.py test_usb_boards.py test_acceptance.py test_identity_evidence.py test_clone_probe.py test_clone_policy.py test_usb_clone.py test_clone_ui.py test_avr_clone.py
+python3 -m py_compile usb_boards.py serial_monitor.py clone_probe.py clone_policy.py clone_tools.py usb_clone.py avr_clone.py tools/usb_boards_acceptance.py test_usb_boards.py test_acceptance.py test_identity_evidence.py test_clone_probe.py test_clone_policy.py test_clone_tools.py test_usb_clone.py test_clone_ui.py test_avr_clone.py
 bash -n install.sh
 omarchy plugin validate .
 ```

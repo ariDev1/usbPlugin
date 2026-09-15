@@ -14,6 +14,7 @@ import subprocess
 import tempfile
 
 from clone_policy import evaluate_source, evaluate_write_pair
+from clone_tools import run_preflight as run_tool_preflight
 from clone_probe import run_esp32_probe
 from avr_clone import (
     FULL_FLASH_SIZE as AVR_FLASH_SIZE,
@@ -574,6 +575,7 @@ def main(
 ) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="operation", required=True)
+    subparsers.add_parser("preflight")
     for name in ("probe", "read-source"):
         command = subparsers.add_parser(name)
         command.add_argument("--identity-key", required=True)
@@ -585,7 +587,9 @@ def main(
     args = parser.parse_args(argv)
     scanner = scanner or _default_scanner
 
-    if args.operation == "probe":
+    if args.operation == "preflight":
+        result = run_tool_preflight(runner=runner)
+    elif args.operation == "probe":
         result = _probe_identity(args.identity_key, scanner=scanner, runner=runner)
     elif args.operation == "read-source":
         result = read_source(

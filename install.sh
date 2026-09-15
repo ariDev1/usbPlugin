@@ -10,6 +10,7 @@ runtime_files=(
   usb_boards.py
   serial_monitor.py
   usb_clone.py
+  clone_tools.py
   clone_policy.py
   clone_probe.py
   avr_clone.py
