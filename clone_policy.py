@@ -164,9 +164,31 @@ def evaluate_pair(
     return CloneDecision(True, "ready", "", family)
 
 
+def evaluate_write_pair(
+    source_device: dict[str, object],
+    target_device: dict[str, object],
+    source_probe: dict[str, object],
+    target_probe: dict[str, object],
+) -> CloneDecision:
+    decision = evaluate_pair(
+        source_device,
+        target_device,
+        source_probe,
+        target_probe,
+    )
+    if not decision.allowed:
+        return decision
+
+    if target_probe.get("rawWriteCandidate") is not True:
+        return _reject("raw-write-unsupported")
+
+    return decision
+
+
 __all__ = [
     "CloneDecision",
     "VALIDATED_READ_PROFILES",
     "evaluate_source",
     "evaluate_pair",
+    "evaluate_write_pair",
 ]

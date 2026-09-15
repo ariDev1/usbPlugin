@@ -5,6 +5,7 @@ from pathlib import Path
 from subprocess import CompletedProcess
 from tempfile import TemporaryDirectory
 import unittest
+import usb_clone
 from unittest.mock import patch
 
 from usb_clone import (
@@ -192,20 +193,157 @@ class SourceReadTests(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["reason"], "connection-changed")
 
-    def test_production_clone_sources_contain_no_destructive_command(self):
-        sources = "\n".join(
+    def test_production_clone_sources_contain_no_explicit_erase_or_efuse_write(self):
+        protected_sources = "\n".join(
+            Path(name).read_text()
+            for name in ("clone_probe.py", "clone_policy.py")
+        )
+        self.assertNotIn("write-flash", protected_sources)
+
+        all_sources = "\n".join(
             Path(name).read_text()
             for name in ("clone_probe.py", "clone_policy.py", "usb_clone.py")
         )
         for forbidden in (
-            "write-flash",
             "erase-flash",
             "erase-region",
             "--force",
             "burn-key",
             "burn-efuse",
         ):
-            self.assertNotIn(forbidden, sources)
+            self.assertNotIn(forbidden, all_sources)
+
+
+class CloneTransactionTests(unittest.TestCase):
+    def test_clone_writes_snapshot_then_independently_reads_back(self):
+        self.assertTrue(hasattr(usb_clone, "clone_flash"))
+
+        source_identity = "source"
+        target_identity = "target"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+
+            source_usb = root / "source-usb"
+            target_usb = root / "target-usb"
+            source_usb.mkdir()
+            target_usb.mkdir()
+            (source_usb / "devnum").write_text("7\n")
+            (target_usb / "devnum").write_text("8\n")
+
+            def device(identity, usb_path, port):
+                return {
+                    "connected": True,
+                    "identityKey": identity,
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                    "stablePath": "",
+                    "port": port,
+                    "sysPath": str(usb_path),
+                }
+
+            def scanner():
+                return [
+                    device(source_identity, source_usb, "/dev/ttyUSB1"),
+                    device(target_identity, target_usb, "/dev/ttyUSB2"),
+                ]
+
+            class CloneRunner:
+                def __init__(self):
+                    self.calls = []
+                    self.source_image = b"\x5a" * 4194304
+                    self.target_image = b"\xff" * 4194304
+
+                def __call__(self, args, **kwargs):
+                    command = list(args)
+                    self.calls.append(command)
+                    port = command[command.index("-p") + 1]
+
+                    if command[-1] == "chip-id":
+                        output = CHIP_ID
+                        if port == "/dev/ttyUSB2":
+                            output = output.replace(
+                                "68:09:47:9e:3c:88",
+                                "68:09:47:9e:3c:89",
+                            )
+                        return CompletedProcess(command, 0, output, "")
+
+                    if command[-1] == "flash-id":
+                        return CompletedProcess(command, 0, FLASH_ID, "")
+
+                    if command[-3:] == ["summary", "--format", "json"]:
+                        return CompletedProcess(command, 0, EFUSES, "")
+
+                    if "write-flash" in command:
+                        self.target_image = Path(command[-1]).read_bytes()
+                        return CompletedProcess(command, 0, "write ok", "")
+
+                    if "read-flash" in command:
+                        output = Path(command[-1])
+                        image = (
+                            self.source_image
+                            if port == "/dev/ttyUSB1"
+                            else self.target_image
+                        )
+                        output.write_bytes(image)
+                        return CompletedProcess(command, 0, "read ok", "")
+
+                    raise AssertionError(command)
+
+            runner = CloneRunner()
+
+            result = usb_clone.clone_flash(
+                source_identity,
+                target_identity,
+                scanner=scanner,
+                runner=runner,
+                environ={"XDG_RUNTIME_DIR": str(runtime)},
+            )
+
+            expected = hashlib.sha256(runner.source_image).hexdigest()
+
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(result["sourceSha256"], expected)
+            self.assertEqual(result["targetSha256"], expected)
+            self.assertEqual(result["imageSize"], 4194304)
+
+            write_calls = [
+                call for call in runner.calls
+                if "write-flash" in call
+            ]
+            self.assertEqual(len(write_calls), 1)
+            self.assertIn("--after", write_calls[0])
+            self.assertIn("no-reset", write_calls[0])
+            self.assertIn("0x0", write_calls[0])
+
+            write_index = next(
+                index
+                for index, call in enumerate(runner.calls)
+                if "write-flash" in call
+            )
+            target_read_index = max(
+                index
+                for index, call in enumerate(runner.calls)
+                if "read-flash" in call
+                and "/dev/ttyUSB2" in call
+            )
+            self.assertGreater(target_read_index, write_index)
+
+            flattened = " ".join(
+                " ".join(call)
+                for call in runner.calls
+            )
+            self.assertNotIn("erase-flash", flattened)
+            self.assertNotIn("erase-region", flattened)
+            self.assertNotIn("burn-efuse", flattened)
+            self.assertNotIn("burn-key", flattened)
+
+            clone_root = runtime / "omarchy" / "usb-boards" / "clone"
+            self.assertEqual(list(clone_root.rglob("*.bin")), [])
 
 
 class CliContractTests(unittest.TestCase):
@@ -231,6 +369,49 @@ class CliContractTests(unittest.TestCase):
             self.assertEqual(payload["status"], "pass")
             self.assertEqual(payload["identityKey"], IDENTITY)
             self.assertEqual(payload["probe"]["chipModel"], "ESP32-D0WD-V3")
+
+    def test_clone_cli_rejects_wrong_target_confirmation(self):
+        output = []
+
+        status = main(
+            [
+                "clone",
+                "--source-identity-key", "source",
+                "--target-identity-key", "target",
+                "--confirm-target-identity", "wrong-target",
+            ],
+            scanner=lambda: [],
+            runner=FakeRunner(),
+            environ={},
+            printer=output.append,
+        )
+
+        self.assertNotEqual(status, 0)
+        payload = json.loads(output[-1])
+        self.assertEqual(payload["operation"], "clone")
+        self.assertEqual(payload["status"], "failed")
+        self.assertEqual(payload["reason"], "target-confirmation-mismatch")
+
+    def test_clone_cli_dispatches_after_exact_target_confirmation(self):
+        output = []
+
+        status = main(
+            [
+                "clone",
+                "--source-identity-key", "source",
+                "--target-identity-key", "target",
+                "--confirm-target-identity", "target",
+            ],
+            scanner=lambda: [],
+            runner=FakeRunner(),
+            environ={},
+            printer=output.append,
+        )
+
+        self.assertNotEqual(status, 0)
+        payload = json.loads(output[-1])
+        self.assertEqual(payload["operation"], "clone")
+        self.assertEqual(payload["reason"], "identity-not-connected")
 
     def test_read_source_cli_returns_nonzero_json_failure(self):
         output = []

@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import tempfile
 
-from clone_policy import evaluate_source
+from clone_policy import evaluate_source, evaluate_write_pair
 from clone_probe import run_esp32_probe
 
 
@@ -94,9 +94,9 @@ def _secure_clone_root(environ: dict[str, str]) -> Path:
     return base
 
 
-def _new_transaction_dir(base: Path) -> Path:
+def _new_transaction_dir(base: Path, prefix: str = "read-") -> Path:
     try:
-        path = Path(tempfile.mkdtemp(prefix="read-", dir=base))
+        path = Path(tempfile.mkdtemp(prefix=prefix, dir=base))
         os.chmod(path, 0o700)
         return path
     except OSError as error:
@@ -141,6 +141,67 @@ def _run_source_read(runner, path: str, image_path: Path) -> None:
         raise RuntimeError("source-read-failed") from error
     if result.returncode != 0:
         raise RuntimeError("source-read-failed")
+
+
+def _clone_failure(reason: str) -> dict[str, object]:
+    return {
+        "operation": "clone",
+        "status": "failed",
+        "reason": reason,
+    }
+
+
+def _run_target_write(runner, path: str, image_path: Path) -> None:
+    try:
+        result = runner(
+            [
+                "esptool",
+                "-p",
+                path,
+                "-b",
+                READ_BAUD,
+                "--after",
+                "no-reset",
+                "write-flash",
+                "0x0",
+                str(image_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("target-write-failed") from error
+
+    if result.returncode != 0:
+        raise RuntimeError("target-write-failed")
+
+
+def _run_target_readback(runner, path: str, image_path: Path) -> None:
+    try:
+        result = runner(
+            [
+                "esptool",
+                "-p",
+                path,
+                "-b",
+                READ_BAUD,
+                "read-flash",
+                "0",
+                FLASH_SIZE_HEX,
+                str(image_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise RuntimeError("target-readback-failed") from error
+
+    if result.returncode != 0:
+        raise RuntimeError("target-readback-failed")
 
 
 def read_source(
@@ -208,6 +269,146 @@ def read_source(
     return result
 
 
+def clone_flash(
+    source_identity_key: str,
+    target_identity_key: str,
+    *,
+    scanner=None,
+    runner=subprocess.run,
+    environ=None,
+) -> dict[str, object]:
+    scanner = scanner or _default_scanner
+    environ = os.environ if environ is None else environ
+    transaction_dir: Path | None = None
+    result: dict[str, object]
+
+    try:
+        devices = scanner()
+        source = resolve_connected_device(source_identity_key, devices)
+        target = resolve_connected_device(target_identity_key, devices)
+
+        source_token = read_connection_token(source)
+        target_token = read_connection_token(target)
+
+        source_path = device_path(source)
+        target_path = device_path(target)
+
+        source_probe = run_esp32_probe(source_path, runner=runner)
+        target_probe = run_esp32_probe(target_path, runner=runner)
+
+        decision = evaluate_write_pair(
+            source,
+            target,
+            source_probe,
+            target_probe,
+        )
+
+        if not decision.allowed:
+            result = _clone_failure(decision.reason)
+        else:
+            base = _secure_clone_root(environ)
+            transaction_dir = _new_transaction_dir(base, "clone-")
+
+            source_image = transaction_dir / "source.bin"
+            target_image = transaction_dir / "target-readback.bin"
+
+            _prepare_private_image(source_image)
+            _prepare_private_image(target_image)
+
+            # Capture one point-in-time SOURCE snapshot.
+            _run_source_read(runner, source_path, source_image)
+
+            try:
+                source_size = source_image.stat().st_size
+            except OSError as error:
+                raise RuntimeError("source-read-failed") from error
+
+            if source_size != FLASH_SIZE:
+                raise RuntimeError("source-size-mismatch")
+
+            os.chmod(source_image, 0o600)
+            source_digest = _sha256(source_image)
+
+            # Re-resolve both physical connections before the first
+            # destructive operation.
+            current_devices = scanner()
+            current_source = resolve_connected_device(
+                source_identity_key,
+                current_devices,
+            )
+            current_target = resolve_connected_device(
+                target_identity_key,
+                current_devices,
+            )
+
+            if read_connection_token(current_source) != source_token:
+                raise RuntimeError("source-connection-changed")
+
+            if read_connection_token(current_target) != target_token:
+                raise RuntimeError("target-connection-changed")
+
+            # This is the first destructive operation.
+            # Keep the target in the ROM bootloader after the write.
+            _run_target_write(
+                runner,
+                target_path,
+                source_image,
+            )
+
+            # Independently read the complete TARGET flash.
+            _run_target_readback(
+                runner,
+                target_path,
+                target_image,
+            )
+
+            try:
+                target_size = target_image.stat().st_size
+            except OSError as error:
+                raise RuntimeError("target-readback-failed") from error
+
+            if target_size != FLASH_SIZE:
+                raise RuntimeError("target-size-mismatch")
+
+            os.chmod(target_image, 0o600)
+            target_digest = _sha256(target_image)
+
+            # Verify that the same physical TARGET stayed connected.
+            final_devices = scanner()
+            final_target = resolve_connected_device(
+                target_identity_key,
+                final_devices,
+            )
+
+            if read_connection_token(final_target) != target_token:
+                raise RuntimeError("target-connection-changed")
+
+            if target_digest != source_digest:
+                raise RuntimeError("verification-mismatch")
+
+            result = {
+                "operation": "clone",
+                "status": "pass",
+                "sourceIdentityKey": source_identity_key,
+                "targetIdentityKey": target_identity_key,
+                "cloneFamily": decision.clone_family,
+                "imageSize": source_size,
+                "sourceSha256": source_digest,
+                "targetSha256": target_digest,
+            }
+
+    except RuntimeError as error:
+        result = _clone_failure(str(error))
+
+    if transaction_dir is not None:
+        try:
+            shutil.rmtree(transaction_dir)
+        except OSError:
+            return _clone_failure("cleanup-failed")
+
+    return result
+
+
 def _probe_identity(identity_key: str, *, scanner, runner) -> dict[str, object]:
     try:
         device = resolve_connected_device(identity_key, scanner())
@@ -246,14 +447,29 @@ def main(
     for name in ("probe", "read-source"):
         command = subparsers.add_parser(name)
         command.add_argument("--identity-key", required=True)
+
+    clone_command = subparsers.add_parser("clone")
+    clone_command.add_argument("--source-identity-key", required=True)
+    clone_command.add_argument("--target-identity-key", required=True)
+    clone_command.add_argument("--confirm-target-identity", required=True)
     args = parser.parse_args(argv)
     scanner = scanner or _default_scanner
 
     if args.operation == "probe":
         result = _probe_identity(args.identity_key, scanner=scanner, runner=runner)
-    else:
+    elif args.operation == "read-source":
         result = read_source(
             args.identity_key,
+            scanner=scanner,
+            runner=runner,
+            environ=environ,
+        )
+    elif args.confirm_target_identity != args.target_identity_key:
+        result = _clone_failure("target-confirmation-mismatch")
+    else:
+        result = clone_flash(
+            args.source_identity_key,
+            args.target_identity_key,
             scanner=scanner,
             runner=runner,
             environ=environ,
@@ -268,6 +484,7 @@ __all__ = [
     "device_path",
     "read_connection_token",
     "read_source",
+    "clone_flash",
     "resolve_connected_device",
 ]
 

@@ -199,6 +199,47 @@ class AdditionalSourcePolicyTests(unittest.TestCase):
         self.assertEqual(evaluate_source(scanner_device(), probe).reason, "unsupported-soc")
 
 
+class WritePairPolicyTests(unittest.TestCase):
+    def test_target_without_write_candidate_is_rejected(self):
+        import clone_policy
+
+        self.assertTrue(hasattr(clone_policy, "evaluate_write_pair"))
+
+        source_probe = valid_probe("00:00:00:00:00:01")
+        target_probe = valid_probe("00:00:00:00:00:02")
+        target_probe["rawWriteCandidate"] = False
+
+        decision = clone_policy.evaluate_write_pair(
+            scanner_device("source"),
+            scanner_device("target"),
+            source_probe,
+            target_probe,
+        )
+
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "raw-write-unsupported")
+
+    def test_write_candidate_pair_is_ready(self):
+        import clone_policy
+
+        self.assertTrue(hasattr(clone_policy, "evaluate_write_pair"))
+
+        source_probe = valid_probe("00:00:00:00:00:01")
+        target_probe = valid_probe("00:00:00:00:00:02")
+        target_probe["rawWriteCandidate"] = True
+
+        decision = clone_policy.evaluate_write_pair(
+            scanner_device("source"),
+            scanner_device("target"),
+            source_probe,
+            target_probe,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.state, "ready")
+        self.assertEqual(decision.reason, "")
+
+
 class AdditionalPairPolicyTests(unittest.TestCase):
     def test_different_chip_model_is_rejected(self):
         source_probe = valid_probe("00:00:00:00:00:01")

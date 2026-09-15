@@ -110,7 +110,7 @@ class ProbeCommandTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["cloneFamily"], "esp32-classic-spi-flash")
         self.assertTrue(result["rawReadSupported"])
-        self.assertFalse(result["rawWriteCandidate"])
+        self.assertTrue(result["rawWriteCandidate"])
         flattened = " ".join(" ".join(call) for call in runner.calls)
         self.assertIn("chip-id", flattened)
         self.assertIn("flash-id", flattened)

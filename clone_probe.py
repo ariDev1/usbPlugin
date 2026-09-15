@@ -112,14 +112,25 @@ def run_esp32_probe(port: str, runner=subprocess.run) -> dict[str, object]:
             runner,
             ["espefuse", "-p", port, "summary", "--format", "json"],
         )
+        chip = parse_chip_id(chip_text)
+        flash = parse_flash_id(flash_text)
+        security = parse_efuse_json(efuse_text)
+
+        raw_write_candidate = (
+            security["flashEncryption"] is False
+            and security["secureBootV1"] is False
+            and security["secureBootV2"] is False
+            and security["uartDownloadEnabled"] is True
+        )
+
         return {
             "ok": True,
             "cloneFamily": "esp32-classic-spi-flash",
-            **parse_chip_id(chip_text),
-            **parse_flash_id(flash_text),
-            **parse_efuse_json(efuse_text),
+            **chip,
+            **flash,
+            **security,
             "rawReadSupported": True,
-            "rawWriteCandidate": False,
+            "rawWriteCandidate": raw_write_candidate,
             "toolVersion": "esptool-cli",
             "error": "",
         }
