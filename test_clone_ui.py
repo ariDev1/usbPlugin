@@ -1189,9 +1189,19 @@ class CloneUiKeyboardActionDispatchContractTests(unittest.TestCase):
         self.assertIn("Math.max(", block)
         self.assertIn("Math.min(", block)
 
+    def test_selected_device_shortcuts_use_shared_action_dispatcher(self):
+        block = self.function_block(
+            "activateSelectedDeviceAction(actionId)",
+            "actionDevice()",
+        )
+        self.assertIn(
+            "root.activateDeviceAction(device, action)",
+            block,
+        )
+
     def test_dispatch_rechecks_enabled_state(self):
         block = self.function_block(
-            "activateSelectedAction()",
+            "activateDeviceAction(device, action)",
             "navigationItemAt(index)",
         )
         self.assertIn(
@@ -1201,7 +1211,7 @@ class CloneUiKeyboardActionDispatchContractTests(unittest.TestCase):
 
     def test_slot_actions_delegate_to_existing_assignment_function(self):
         block = self.function_block(
-            "activateSelectedAction()",
+            "activateDeviceAction(device, action)",
             "navigationItemAt(index)",
         )
         self.assertIn('root.assignWorkbenchSlot("left", device)', block)
@@ -1209,7 +1219,7 @@ class CloneUiKeyboardActionDispatchContractTests(unittest.TestCase):
 
     def test_clone_actions_delegate_to_existing_guarded_functions(self):
         block = self.function_block(
-            "activateSelectedAction()",
+            "activateDeviceAction(device, action)",
             "navigationItemAt(index)",
         )
         for required in (
@@ -1222,7 +1232,7 @@ class CloneUiKeyboardActionDispatchContractTests(unittest.TestCase):
 
     def test_profile_actions_delegate_to_existing_functions(self):
         block = self.function_block(
-            "activateSelectedAction()",
+            "activateDeviceAction(device, action)",
             "navigationItemAt(index)",
         )
         for required in (
@@ -1266,12 +1276,71 @@ class CloneUiKeyboardRoutingContractTests(unittest.TestCase):
         self.assertIn('text === "r" || text === "R"', self.block)
         self.assertIn("root.refresh()", self.block)
 
-    def test_no_direct_clone_letter_binding_is_added(self):
-        for forbidden in (
-            'text === "p"', 'text === "P"', 'text === "s"',
-            'text === "S"', 'text === "t"', 'text === "T"',
+    def test_source_shortcut_routes_through_selected_device_action(self):
+        self.assertIn('text === "s" || text === "S"', self.block)
+        self.assertIn(
+            'root.activateSelectedDeviceAction("source")',
+            self.block,
+        )
+
+    def test_target_shortcut_routes_through_selected_device_action(self):
+        self.assertIn('text === "t" || text === "T"', self.block)
+        self.assertIn(
+            'root.activateSelectedDeviceAction("target")',
+            self.block,
+        )
+
+    def test_probe_shortcut_routes_through_selected_device_action(self):
+        self.assertIn('text === "p" || text === "P"', self.block)
+        self.assertIn(
+            'root.activateSelectedDeviceAction("probe")',
+            self.block,
+        )
+
+    def test_copy_path_shortcut_routes_through_selected_device_action(self):
+        self.assertIn('text === "c" || text === "C"', self.block)
+        self.assertIn(
+            'root.activateSelectedDeviceAction("copy-path")',
+            self.block,
+        )
+
+    def test_rename_shortcut_routes_through_selected_device_action(self):
+        self.assertIn('text === "n" || text === "N"', self.block)
+        self.assertIn(
+            'root.activateSelectedDeviceAction("rename")',
+            self.block,
+        )
+
+    def test_monitor_shortcut_routes_through_selected_device_action(self):
+        self.assertIn('text === "m" || text === "M"', self.block)
+        self.assertIn(
+            'root.activateSelectedDeviceAction("monitor")',
+            self.block,
+        )
+
+    def test_remaining_direct_shortcuts_use_selected_device_action(self):
+        for key, action_id in (
+            ("a", "grant-access"),
+            ("d", "details"),
         ):
-            self.assertNotIn(forbidden, self.block)
+            self.assertIn(
+                f'text === "{key}" || text === "{key.upper()}"',
+                self.block,
+            )
+            self.assertIn(
+                f'root.activateSelectedDeviceAction("{action_id}")',
+                self.block,
+            )
+
+    def test_destructive_and_read_actions_have_no_direct_shortcut(self):
+        self.assertNotIn(
+            'root.activateSelectedDeviceAction("read-source")',
+            self.block,
+        )
+        self.assertNotIn(
+            'root.activateSelectedDeviceAction("clone")',
+            self.block,
+        )
 
 
 class CloneUiKeyboardActionSurfaceContractTests(unittest.TestCase):
@@ -1348,6 +1417,46 @@ class CloneUiKeyboardActionSurfaceContractTests(unittest.TestCase):
         block = self.component_block("ActionMenu", "OfflineDeviceRow")
         self.assertIn('? "UNAVAILABLE"', block)
         self.assertNotIn("UNAVAILABLE IN CURRENT STATE", block)
+
+    def test_action_model_exposes_only_approved_shortcut_labels(self):
+        start = self.source.find("function actionsForDevice(device)")
+        end = self.source.find("function selectActionByDelta(delta)", start)
+        block = self.source[start:end]
+
+        for action_id, shortcut in (
+            ("source", "S"),
+            ("target", "T"),
+            ("probe", "P"),
+            ("rename", "N"),
+            ("copy-path", "C"),
+            ("details", "D"),
+        ):
+            self.assertIn(
+                f'id: "{action_id}"',
+                block,
+            )
+            self.assertIn(
+                f'shortcut: "{shortcut}"',
+                block,
+            )
+
+        self.assertIn(
+            'shortcut: device.readable && device.writable ? "M" : "A"',
+            block,
+        )
+
+        self.assertNotIn(
+            'id: "read-source", shortcut:',
+            block,
+        )
+        self.assertNotIn(
+            'id: "clone", shortcut:',
+            block,
+        )
+
+    def test_action_menu_displays_shortcut_metadata(self):
+        block = self.component_block("ActionMenu", "OfflineDeviceRow")
+        self.assertIn("modelData.shortcut", block)
 
     def test_resetting_clone_operations_are_explicit(self):
         action_start = self.source.find("function actionsForDevice(device)")
@@ -1724,7 +1833,7 @@ class CloneUiCloneTransactionContractTests(unittest.TestCase):
         )
 
         block = self.function_block(
-            "activateSelectedAction()",
+            "activateDeviceAction(device, action)",
             "navigationItemAt(index)",
         )
         self.assertIn(

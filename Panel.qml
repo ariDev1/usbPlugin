@@ -1116,6 +1116,19 @@ Panel {
     return root.navigationDeviceAt(root.selectedIndex)
   }
 
+  function activateSelectedDeviceAction(actionId) {
+    var device = root.selectedNavigationDevice()
+    if (!device) return
+
+    var actions = root.actionsForDevice(device)
+    for (var index = 0; index < actions.length; index++) {
+      var action = actions[index]
+      if (action.id !== actionId) continue
+      root.activateDeviceAction(device, action)
+      return
+    }
+  }
+
   function actionDevice() {
     if (root.actionDeviceKey === "") return null
 
@@ -1161,7 +1174,7 @@ Panel {
       return [
         { id: "open-left", label: "OPEN IN LEFT", enabled: root.validWorkbenchIdentity(device) !== "", active: false, note: "" },
         { id: "open-right", label: "OPEN IN RIGHT", enabled: root.validWorkbenchIdentity(device) !== "", active: false, note: "" },
-        { id: "copy-path", label: "COPY PATH", enabled: root.devicePath(device) !== "", active: false, note: "" }
+        { id: "copy-path", label: "COPY PATH", shortcut: "C", enabled: root.devicePath(device) !== "", active: false, note: "" }
       ]
     }
 
@@ -1171,25 +1184,25 @@ Panel {
       var serialActionAvailable = device.connected && device.serialAvailable
 
       return [
-        { id: "source", label: "SOURCE", enabled: root.canSelectCloneSource(device), active: root.cloneSourceKey === root.cloneIdentityKey(device), note: "" },
-        { id: "target", label: "TARGET", enabled: root.canSelectCloneTarget(device), active: root.cloneTargetKey === root.cloneIdentityKey(device), note: "" },
-        { id: "probe", label: "PROBE", enabled: root.cloneProbeEligible(device), active: false, note: "RESETS BOARD" },
+        { id: "source", label: "SOURCE", shortcut: "S", enabled: root.canSelectCloneSource(device), active: root.cloneSourceKey === root.cloneIdentityKey(device), note: "" },
+        { id: "target", label: "TARGET", shortcut: "T", enabled: root.canSelectCloneTarget(device), active: root.cloneTargetKey === root.cloneIdentityKey(device), note: "" },
+        { id: "probe", label: "PROBE", shortcut: "P", enabled: root.cloneProbeEligible(device), active: false, note: "RESETS BOARD" },
         { id: "read-source", label: "READ SOURCE", enabled: root.cloneSourceReadEligible(device), active: false, note: "RESETS BOARD" },
         { id: "clone", label: root.cloneTransactionArmedForCurrentPair() && root.cloneTargetKey === root.cloneIdentityKey(device) ? "CONFIRM CLONE" : "CLONE TARGET", enabled: root.cloneTransactionEligible(device), active: root.cloneTransactionArmedForCurrentPair() && root.cloneTargetKey === root.cloneIdentityKey(device), note: "OVERWRITES TARGET" },
-        { id: "rename", label: "RENAME", enabled: true, active: false, note: "" },
+        { id: "rename", label: "RENAME", shortcut: "N", enabled: true, active: false, note: "" },
         { id: "baud", label: "BAUD RATE", enabled: serialSettingsAvailable, active: false, note: "" },
         { id: "line-ending", label: "LINE ENDING", enabled: serialSettingsAvailable, active: false, note: "" },
         { id: "data-format", label: "DATA FORMAT", enabled: serialSettingsAvailable, active: false, note: "" },
         { id: "logging", label: "SESSION LOGGING", enabled: serialSettingsAvailable, active: root.effectiveLogging(device), note: "" },
-        { id: "copy-path", label: "COPY PATH", enabled: root.devicePath(device) !== "", active: false, note: "" },
-        { id: device.readable && device.writable ? "monitor" : "grant-access", label: device.readable && device.writable ? "OPEN MONITOR" : "GRANT ACCESS", enabled: serialActionAvailable, active: false, note: "" }
+        { id: "copy-path", label: "COPY PATH", shortcut: "C", enabled: root.devicePath(device) !== "", active: false, note: "" },
+        { id: device.readable && device.writable ? "monitor" : "grant-access", label: device.readable && device.writable ? "OPEN MONITOR" : "GRANT ACCESS", shortcut: device.readable && device.writable ? "M" : "A", enabled: serialActionAvailable, active: false, note: "" }
       ]
     }
 
     if (location === "offline") {
       return [
-        { id: "details", label: root.expandedOfflineKey === root.profileKey(device) ? "LESS" : "DETAILS", enabled: true, active: root.expandedOfflineKey === root.profileKey(device), note: "" },
-        { id: "rename", label: "RENAME", enabled: true, active: false, note: "" },
+        { id: "details", shortcut: "D", label: root.expandedOfflineKey === root.profileKey(device) ? "LESS" : "DETAILS", enabled: true, active: root.expandedOfflineKey === root.profileKey(device), note: "" },
+        { id: "rename", label: "RENAME", shortcut: "N", enabled: true, active: false, note: "" },
         { id: "baud", label: "BAUD RATE", enabled: true, active: false, note: "" },
         { id: "line-ending", label: "LINE ENDING", enabled: true, active: false, note: "" },
         { id: "data-format", label: "DATA FORMAT", enabled: true, active: false, note: "" },
@@ -1261,9 +1274,7 @@ Panel {
     }
   }
 
-  function activateSelectedAction() {
-    var device = root.actionDevice()
-    var action = root.selectedAction()
+  function activateDeviceAction(device, action) {
     if (!device || !action || action.enabled !== true) return
 
     var key = root.deviceActionKey(device)
@@ -1310,6 +1321,12 @@ Panel {
     } else if (action.id === "details") {
       root.toggleOfflineDetails(device)
     }
+  }
+
+  function activateSelectedAction() {
+    var device = root.actionDevice()
+    var action = root.selectedAction()
+    root.activateDeviceAction(device, action)
   }
 
   function navigationItemAt(index) {
@@ -1563,6 +1580,22 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(text) {
         if (text === "r" || text === "R") root.refresh()
+        else if (text === "s" || text === "S")
+          root.activateSelectedDeviceAction("source")
+        else if (text === "t" || text === "T")
+          root.activateSelectedDeviceAction("target")
+        else if (text === "p" || text === "P")
+          root.activateSelectedDeviceAction("probe")
+        else if (text === "c" || text === "C")
+          root.activateSelectedDeviceAction("copy-path")
+        else if (text === "n" || text === "N")
+          root.activateSelectedDeviceAction("rename")
+        else if (text === "m" || text === "M")
+          root.activateSelectedDeviceAction("monitor")
+        else if (text === "a" || text === "A")
+          root.activateSelectedDeviceAction("grant-access")
+        else if (text === "d" || text === "D")
+          root.activateSelectedDeviceAction("details")
       }
 
       ScrollView {
@@ -2842,10 +2875,17 @@ Panel {
               }
 
               Text {
-                text: actionRow.modelData.enabled !== true
-                  ? "UNAVAILABLE"
-                  : (actionRow.modelData.active === true
-                    ? "ACTIVE" : String(actionRow.modelData.note || ""))
+                text: {
+                  var shortcut = String(actionRow.modelData.shortcut || "")
+                  var state = actionRow.modelData.enabled !== true
+                    ? "UNAVAILABLE"
+                    : (actionRow.modelData.active === true
+                      ? "ACTIVE" : String(actionRow.modelData.note || ""))
+
+                  if (shortcut !== "" && state !== "")
+                    return shortcut + " · " + state
+                  return shortcut !== "" ? shortcut : state
+                }
                 color: root.bar.foreground
                 opacity: 0.58
                 font.family: root.bar.fontFamily
