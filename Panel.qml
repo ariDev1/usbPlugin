@@ -29,6 +29,8 @@ Panel {
   property bool cloneProbeBusy: false
   property var cloneProbeResults: ({})
   property var cloneProbeErrors: ({})
+  property var clonePreflightResult: null
+  property string clonePreflightError: ""
   property string cloneReadKey: ""
   property bool cloneReadBusy: false
   property var cloneReadResult: null
@@ -173,8 +175,90 @@ Panel {
     }
   }
 
-  function refresh() {
+  function scanDevices() {
     if (!scanProc.running) scanProc.running = true
+  }
+
+  function refresh() {
+    root.scanDevices()
+    if (!clonePreflightProc.running) clonePreflightProc.running = true
+  }
+
+  function cloneFamilyToolsReady(family) {
+    var result = root.clonePreflightResult
+    if (!result || !result.families) return false
+    var state = result.families[String(family || "")]
+    return !!state && state.ready === true
+  }
+
+  function cloneToolsReady() {
+    return root.cloneFamilyToolsReady("esp32-classic-spi-flash")
+      && root.cloneFamilyToolsReady("avr-stk500v1-serial")
+  }
+
+  function cloneToolReasonLabel(reason) {
+    return String(reason || "").split("-").join(" ").toUpperCase()
+  }
+
+  function cloneToolsStatusLabel() {
+    if (clonePreflightProc.running) return "CLONE TOOLS CHECKING"
+
+    if (root.clonePreflightResult === null)
+      return root.clonePreflightError !== ""
+        ? "CLONE TOOLS CHECK FAILED · " + root.cloneToolReasonLabel(root.clonePreflightError)
+        : "CLONE TOOLS NOT CHECKED"
+
+    if (root.cloneToolsReady()) return "CLONE TOOLS READY"
+
+    var families = root.clonePreflightResult.families || {}
+    var order = ["esp32-classic-spi-flash", "avr-stk500v1-serial"]
+
+    for (var index = 0; index < order.length; index++) {
+      var state = families[order[index]]
+      if (!state || state.ready !== true) {
+        var reason = state ? String(state.reason || "") : ""
+        return reason !== ""
+          ? "CLONE TOOLS INCOMPLETE · " + root.cloneToolReasonLabel(reason)
+          : "CLONE TOOLS INCOMPLETE"
+      }
+    }
+
+    return "CLONE TOOLS INCOMPLETE"
+  }
+
+  function validClonePreflightResult(parsed) {
+    if (!parsed || parsed.operation !== "preflight"
+        || parsed.status !== "pass"
+        || !parsed.families
+        || typeof parsed.families !== "object"
+        || Array.isArray(parsed.families))
+      return false
+
+    var families = ["esp32-classic-spi-flash", "avr-stk500v1-serial"]
+    for (var index = 0; index < families.length; index++) {
+      var state = parsed.families[families[index]]
+      if (!state
+          || typeof state !== "object"
+          || Array.isArray(state)
+          || typeof state.ready !== "boolean"
+          || typeof state.reason !== "string")
+        return false
+    }
+
+    return true
+  }
+
+  function updateClonePreflight(raw) {
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+      if (!root.validClonePreflightResult(parsed))
+        throw new Error("invalid preflight result")
+      root.clonePreflightResult = parsed
+      root.clonePreflightError = ""
+    } catch (error) {
+      root.clonePreflightResult = null
+      root.clonePreflightError = "invalid-preflight-result"
+    }
   }
 
   function updateDevices(raw) {
@@ -570,12 +654,36 @@ Panel {
       && root.cloneRunTargetKey === root.cloneTargetKey
   }
 
+  function cloneToolsReadyForCurrentPair() {
+    var source = root.deviceForIdentity(root.cloneSourceKey)
+    var target = root.deviceForIdentity(root.cloneTargetKey)
+    var sourceProbe = root.cloneProbeResultFor(source)
+    var targetProbe = root.cloneProbeResultFor(target)
+    var sourceFamily = sourceProbe && root.validCloneFamily(sourceProbe.cloneFamily)
+      ? String(sourceProbe.cloneFamily) : ""
+    var targetFamily = targetProbe && root.validCloneFamily(targetProbe.cloneFamily)
+      ? String(targetProbe.cloneFamily) : ""
+
+    if (sourceFamily !== "" && targetFamily === "")
+      return root.cloneFamilyToolsReady(sourceFamily)
+    if (targetFamily !== "" && sourceFamily === "")
+      return root.cloneFamilyToolsReady(targetFamily)
+    if (sourceFamily !== "" && targetFamily !== ""
+        && sourceFamily !== targetFamily)
+      return false
+    if (sourceFamily !== "" && sourceFamily === targetFamily)
+      return root.cloneFamilyToolsReady(sourceFamily)
+
+    return root.cloneToolsReady()
+  }
+
   function cloneTransactionEligible(device) {
     var key = root.cloneIdentityKey(device)
 
     if (key === "" || key !== root.cloneTargetKey) return false
     if (root.cloneSourceKey === "" || root.cloneTargetKey === "") return false
     if (root.cloneSourceKey === root.cloneTargetKey) return false
+    if (!root.cloneToolsReadyForCurrentPair()) return false
 
     if (root.cloneRunBusy
         || root.cloneProbeBusy
@@ -1359,6 +1467,15 @@ Panel {
   }
 
   Process {
+    id: clonePreflightProc
+    command: ["python3", root.cloneBackendPath, "preflight"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.updateClonePreflight(text)
+    }
+  }
+
+  Process {
     id: cloneProbeProc
     command: []
     stdout: StdioCollector {
@@ -1398,7 +1515,7 @@ Panel {
     interval: root.opened ? 1000 : 2500
     repeat: true
     running: true
-    onTriggered: root.refresh()
+    onTriggered: root.scanDevices()
   }
 
   implicitWidth: devices.length > 0 ? button.implicitWidth : 0
@@ -1498,6 +1615,14 @@ Panel {
                   ? root.warningTone
                   : (root.connectedDevices.length > 0
                     ? root.readyTone : root.offlineTone)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: true
+                font.letterSpacing: 1.2
+              }
+              Text {
+                text: root.cloneToolsStatusLabel()
+                color: root.cloneToolsReady() ? root.readyTone : root.warningTone
                 font.family: root.bar.fontFamily
                 font.pixelSize: Style.font.caption
                 font.bold: true
@@ -2286,7 +2411,9 @@ Panel {
             && cloneEvidence.runError === ""
           text: root.cloneTransactionArmedForCurrentPair()
             ? "TARGET ARMED · CONFIRM CLONE"
-            : "TARGET READY FOR GUARDED CLONE"
+            : (root.cloneTransactionEligible(deviceColumn.modelData)
+              ? "TARGET READY FOR GUARDED CLONE"
+              : "TARGET NOT READY")
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption

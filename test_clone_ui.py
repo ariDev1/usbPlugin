@@ -71,6 +71,50 @@ class CloneUiRoleProbeContractTests(unittest.TestCase):
     def setUpClass(cls):
         cls.source = Path("Panel.qml").read_text()
 
+    def test_refresh_runs_clone_tool_preflight(self):
+        self.assertIn("id: clonePreflightProc", self.source)
+        self.assertIn("command: [\"python3\", root.cloneBackendPath, \"preflight\"]", self.source)
+        self.assertIn("if (!clonePreflightProc.running) clonePreflightProc.running = true", self.source)
+        self.assertIn("function scanDevices()", self.source)
+        self.assertIn("onTriggered: root.scanDevices()", self.source)
+
+    def test_clone_preflight_result_is_runtime_state(self):
+        self.assertIn("property var clonePreflightResult: null", self.source)
+        self.assertIn("property string clonePreflightError: \"\"", self.source)
+        self.assertIn("function updateClonePreflight(raw)", self.source)
+        self.assertIn("parsed.operation !== \"preflight\"", self.source)
+        self.assertIn("onStreamFinished: root.updateClonePreflight(text)", self.source)
+
+    def test_clone_tool_status_uses_family_readiness(self):
+        self.assertIn("function cloneFamilyToolsReady(family)", self.source)
+        self.assertIn("function cloneToolsStatusLabel()", self.source)
+        self.assertIn("CLONE TOOLS READY", self.source)
+        self.assertIn("CLONE TOOLS INCOMPLETE", self.source)
+        self.assertIn("text: root.cloneToolsStatusLabel()", self.source)
+
+    def test_clone_transaction_requires_host_tools(self):
+        self.assertIn("function cloneToolsReadyForCurrentPair()", self.source)
+        self.assertIn("if (!root.cloneToolsReadyForCurrentPair()) return false", self.source)
+
+    def test_clone_tool_gate_rejects_family_mismatch(self):
+        self.assertIn("sourceFamily !== targetFamily", self.source)
+        self.assertIn("return false", self.source)
+
+    def test_clone_tool_status_reports_evidence_state(self):
+        self.assertIn("CLONE TOOLS CHECKING", self.source)
+        self.assertIn("CLONE TOOLS NOT CHECKED", self.source)
+        self.assertIn("CLONE TOOLS CHECK FAILED", self.source)
+        self.assertIn("function cloneToolReasonLabel(reason)", self.source)
+
+    def test_clone_preflight_parser_validates_family_schema(self):
+        self.assertIn("function validClonePreflightResult(parsed)", self.source)
+        self.assertIn("typeof state.ready !== \"boolean\"", self.source)
+        self.assertIn("!root.validClonePreflightResult(parsed)", self.source)
+
+    def test_clone_target_ready_label_requires_eligibility(self):
+        self.assertIn("TARGET NOT READY", self.source)
+        self.assertIn("root.cloneTransactionEligible(deviceColumn.modelData)", self.source)
+
     def test_clone_role_state_is_runtime_only(self):
         self.assertIn('property string cloneSourceKey: ""', self.source)
         self.assertIn('property string cloneTargetKey: ""', self.source)
