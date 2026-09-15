@@ -111,6 +111,35 @@ class PairPolicyTests(unittest.TestCase):
         decision = evaluate_pair(scanner_device("source"), scanner_device("target"), source_probe, target_probe)
         self.assertEqual(decision.reason, "flash-size-mismatch")
 
+    def test_measured_d0wdq6_v1_pair_is_compatible_but_not_write_enabled(self):
+        source_probe = valid_probe("24:6f:28:b1:9c:40")
+        target_probe = valid_probe("24:6f:28:b1:40:58")
+
+        for probe in (source_probe, target_probe):
+            probe.update(
+                {
+                    "chipModel": "ESP32-D0WDQ6",
+                    "chipRevision": "v1.0",
+                    "flashManufacturer": "5e",
+                    "flashDevice": "4016",
+                    "flashSize": 4194304,
+                }
+            )
+
+        decision = evaluate_pair(
+            scanner_device("source"),
+            scanner_device("target"),
+            source_probe,
+            target_probe,
+        )
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.state, "ready")
+        self.assertEqual(decision.reason, "")
+        self.assertEqual(decision.clone_family, "esp32-classic-spi-flash")
+        self.assertFalse(source_probe["rawWriteCandidate"])
+        self.assertFalse(target_probe["rawWriteCandidate"])
+
     def test_matching_validated_pair_is_compatible_but_not_write_enabled(self):
         source_probe = valid_probe("00:00:00:00:00:01")
         target_probe = valid_probe("00:00:00:00:00:02")
@@ -123,6 +152,25 @@ class PairPolicyTests(unittest.TestCase):
 
 
 class AdditionalSourcePolicyTests(unittest.TestCase):
+    def test_measured_d0wdq6_v1_profile_is_read_ready(self):
+        probe = valid_probe()
+        probe.update(
+            {
+                "chipModel": "ESP32-D0WDQ6",
+                "chipRevision": "v1.0",
+                "flashManufacturer": "5e",
+                "flashDevice": "4016",
+                "flashSize": 4194304,
+            }
+        )
+
+        decision = evaluate_source(scanner_device(), probe)
+
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.state, "ready")
+        self.assertEqual(decision.reason, "")
+        self.assertEqual(decision.clone_family, "esp32-classic-spi-flash")
+
     def test_serial_interface_unavailable_is_rejected(self):
         device = scanner_device()
         device["serialAvailable"] = False

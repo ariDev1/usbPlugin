@@ -14,6 +14,13 @@ VALIDATED_READ_PROFILES = {
         "68",
         "4016",
     ): "esp32-classic-spi-flash",
+    (
+        "ESP32-D0WDQ6",
+        "v1.0",
+        4194304,
+        "5e",
+        "4016",
+    ): "esp32-classic-spi-flash",
 }
 
 
