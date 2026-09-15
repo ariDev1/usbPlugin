@@ -274,7 +274,9 @@ Run the workstation acceptance gate with:
 python3 tools/usb_boards_acceptance.py
 ```
 
-The gate requires the `development` branch and requires the active Omarchy plugin path to resolve to that checkout.
+The gate requires the `development` branch. The active Omarchy plugin must be a
+real directory copy, not a symlink. Each defined runtime file must match the
+development checkout byte-for-byte.
 
 It validates the plugin, scans devices directly, restarts the Omarchy shell, verifies IPC readiness, reads runtime state, and compares connected scanner and runtime identities.
 

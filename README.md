@@ -161,7 +161,7 @@ Run the source-level checks from the repository root:
 ```bash
 node test_profile_store.js
 python3 -m unittest -v
-python3 -m py_compile usb_boards.py serial_monitor.py   tools/usb_boards_acceptance.py   test_usb_boards.py test_acceptance.py test_identity_evidence.py
+python3 -m py_compile usb_boards.py serial_monitor.py clone_probe.py clone_policy.py usb_clone.py avr_clone.py tools/usb_boards_acceptance.py test_usb_boards.py test_acceptance.py test_identity_evidence.py test_clone_probe.py test_clone_policy.py test_usb_clone.py test_clone_ui.py test_avr_clone.py
 bash -n install.sh
 omarchy plugin validate .
 ```
@@ -172,8 +172,9 @@ On an Omarchy workstation, run the deterministic runtime acceptance gate:
 python3 tools/usb_boards_acceptance.py
 ```
 
-The runtime gate requires the `development` branch and requires the active
-Omarchy plugin path to resolve to that checkout. It validates the plugin,
+The runtime gate requires the `development` branch. The active Omarchy plugin
+must be a real directory copy, not a symlink. Each defined runtime file must
+match the development checkout byte-for-byte. The gate validates the plugin,
 restarts the Omarchy shell, reads runtime state, and compares scanner and
 runtime identity evidence.
 
@@ -188,7 +189,6 @@ Remove the plugin with Omarchy:
 omarchy plugin remove dev.usb-boards
 ```
 
-Omarchy disables the plugin before removing the checkout or local symlink.
 Session logs are kept intentionally. To delete the stored RX/TX logs as well:
 
 ```bash
