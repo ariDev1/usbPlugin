@@ -106,8 +106,9 @@ class CloneUiRoleProbeContractTests(unittest.TestCase):
     def test_probe_reset_warning_is_explicit(self):
         self.assertIn("PROBE RESETS BOARD", self.source)
 
-    def test_target_write_remains_locked(self):
-        self.assertIn("TARGET WRITE LOCKED", self.source)
+    def test_target_write_uses_guarded_clone_backend(self):
+        self.assertNotIn("TARGET WRITE LOCKED", self.source)
+        self.assertIn('"--confirm-target-identity"', self.source)
         for forbidden in ("write-flash", "erase-flash", "erase-region", "burn-efuse"):
             self.assertNotIn(forbidden, self.source)
 
@@ -909,7 +910,8 @@ class CloneUiWorkbenchCloneIsolationContractTests(unittest.TestCase):
             '"READ SOURCE"',
             "PROBE RESETS BOARD",
             "READ SOURCE · RESETS BOARD",
-            "TARGET WRITE LOCKED",
+            '"CLONE TARGET"',
+            '"CONFIRM CLONE"',
             "id: cloneEvidence",
         ):
             self.assertIn(required, block)
@@ -1444,3 +1446,162 @@ class CloneUiKeyboardRackCursorContractTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CloneUiCloneTransactionContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find("function " + next_name, start)
+        return self.source[start:] if end < 0 else self.source[start:end]
+
+    def test_clone_transaction_state_is_runtime_only(self):
+        for required in (
+            'property bool cloneRunBusy: false',
+            'property bool cloneRunArmed: false',
+            'property string cloneRunSourceKey: ""',
+            'property string cloneRunTargetKey: ""',
+            'property var cloneRunResult: null',
+            'property string cloneRunError: ""',
+        ):
+            self.assertIn(required, self.source)
+
+        self.assertNotIn("persistSettings({ cloneRun", self.source)
+        self.assertNotIn("persistDeviceProfile(device, { cloneRun", self.source)
+
+    def test_clone_transaction_requires_exact_current_pair(self):
+        block = self.function_block(
+            "cloneTransactionArmedForCurrentPair()",
+            "cloneTransactionEligible(device)",
+        )
+        self.assertIn("root.cloneRunArmed", block)
+        self.assertIn("root.cloneRunSourceKey === root.cloneSourceKey", block)
+        self.assertIn("root.cloneRunTargetKey === root.cloneTargetKey", block)
+
+    def test_clone_transaction_uses_guarded_backend_cli(self):
+        self.assertIn(
+            '["python3", root.cloneBackendPath, "clone",',
+            self.source,
+        )
+        self.assertIn('"--source-identity-key", sourceKey', self.source)
+        self.assertIn('"--target-identity-key", targetKey', self.source)
+        self.assertIn('"--confirm-target-identity", targetKey', self.source)
+
+        for forbidden in (
+            '"write-flash"',
+            '"erase-flash"',
+            '"erase-region"',
+            '"burn-efuse"',
+            '"burn-key"',
+        ):
+            self.assertNotIn(forbidden, self.source)
+
+    def test_clone_result_requires_equal_full_sha256(self):
+        block = self.function_block(
+            "finishCloneTransaction(raw)",
+            "cloneReadSizeLabel(result)",
+        )
+        self.assertIn('parsed.operation !== "clone"', block)
+        self.assertIn(
+            'String(parsed.sourceIdentityKey || "") !== sourceKey',
+            block,
+        )
+        self.assertIn(
+            'String(parsed.targetIdentityKey || "") !== targetKey',
+            block,
+        )
+        self.assertIn("!root.validCloneSha256(sourceSha256)", block)
+        self.assertIn("!root.validCloneSha256(targetSha256)", block)
+        self.assertIn("sourceSha256 !== targetSha256", block)
+
+    def test_clone_transaction_has_dedicated_process(self):
+        self.assertIn("id: cloneRunProc", self.source)
+        self.assertIn(
+            "onStreamFinished: root.finishCloneTransaction(text)",
+            self.source,
+        )
+
+    def test_keyboard_action_delegates_to_guarded_clone_function(self):
+        self.assertIn(
+            '{ id: "clone",',
+            self.source,
+        )
+
+        block = self.function_block(
+            "activateSelectedAction()",
+            "navigationItemAt(index)",
+        )
+        self.assertIn(
+            'action.id === "clone"',
+            block,
+        )
+        self.assertIn(
+            "root.activateCloneTransaction(device)",
+            block,
+        )
+
+
+class CloneUiRunProgressContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def test_clone_run_has_indeterminate_progress_indicator(self):
+        start = self.source.find("id: cloneRunProgress")
+        self.assertGreaterEqual(start, 0)
+
+        end = self.source.find("CLONE FAILED", start)
+        self.assertGreater(end, start)
+
+        block = self.source[start:end]
+
+        self.assertIn(
+            "root.cloneRunBusy",
+            block,
+        )
+        self.assertIn(
+            "root.cloneRunTargetKey === cloneEvidence.identityKey",
+            block,
+        )
+        self.assertIn("NumberAnimation on x", block)
+        self.assertIn("loops: Animation.Infinite", block)
+        self.assertNotIn("value:", block)
+        self.assertNotIn("%", block)
+
+    def test_bar_reports_active_clone(self):
+        normalized = " ".join(self.source.split())
+        self.assertIn(
+            'text: root.cloneRunBusy ? "CLONE" :',
+            normalized,
+        )
+
+
+class CloneUiSourceOnlyReadControlContractTests(unittest.TestCase):
+    def test_read_source_control_is_visible_only_for_source(self):
+        source = Path("Panel.qml").read_text()
+
+        marker = 'label: root.cloneReadBusy'
+        marker_pos = source.find(marker)
+        self.assertGreaterEqual(marker_pos, 0)
+
+        start = source.rfind("CloneActionButton {", 0, marker_pos)
+        self.assertGreaterEqual(start, 0)
+
+        end = source.find("      }", marker_pos)
+        self.assertGreater(end, start)
+
+        block = source[start:end]
+
+        self.assertIn(
+            "visible: root.cloneSourceKey",
+            block,
+        )
+        self.assertIn(
+            "=== root.cloneIdentityKey(deviceColumn.modelData)",
+            block,
+        )

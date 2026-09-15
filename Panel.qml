@@ -33,6 +33,12 @@ Panel {
   property bool cloneReadBusy: false
   property var cloneReadResult: null
   property string cloneReadError: ""
+  property bool cloneRunBusy: false
+  property bool cloneRunArmed: false
+  property string cloneRunSourceKey: ""
+  property string cloneRunTargetKey: ""
+  property var cloneRunResult: null
+  property string cloneRunError: ""
   property bool offlineFoldOpen: false
   property string expandedOfflineKey: ""
   property string workbenchLeftKey: ""
@@ -409,31 +415,43 @@ Panel {
 
   function canSelectCloneSource(device) {
     var key = root.cloneIdentityKey(device)
-    return !root.cloneReadBusy && key !== "" && key !== root.cloneTargetKey
+    return !root.cloneReadBusy
+      && !root.cloneRunBusy
+      && key !== ""
+      && key !== root.cloneTargetKey
   }
 
   function canSelectCloneTarget(device) {
     var key = root.cloneIdentityKey(device)
-    return key !== "" && key !== root.cloneSourceKey
+    return !root.cloneRunBusy
+      && key !== ""
+      && key !== root.cloneSourceKey
   }
 
   function toggleCloneSource(device) {
     var key = root.cloneIdentityKey(device)
     if (key === "" || !root.canSelectCloneSource(device)) return
     var nextKey = root.cloneSourceKey === key ? "" : key
-    if (nextKey !== root.cloneSourceKey) root.clearCloneReadEvidence()
+    if (nextKey !== root.cloneSourceKey) {
+      root.clearCloneReadEvidence()
+      root.clearCloneTransactionState()
+    }
     root.cloneSourceKey = nextKey
   }
 
   function toggleCloneTarget(device) {
     var key = root.cloneIdentityKey(device)
     if (key === "" || !root.canSelectCloneTarget(device)) return
-    root.cloneTargetKey = root.cloneTargetKey === key ? "" : key
+    var nextKey = root.cloneTargetKey === key ? "" : key
+    if (nextKey !== root.cloneTargetKey)
+      root.clearCloneTransactionState()
+    root.cloneTargetKey = nextKey
   }
 
   function cloneProbeEligible(device) {
     if (!root.isCloneSelected(device)) return false
     return !root.cloneReadBusy
+      && !root.cloneRunBusy
       && device.connected
       && device.serialAvailable
       && device.readable
@@ -461,6 +479,7 @@ Panel {
     if (key === "" || key !== root.cloneSourceKey) return false
     return !root.cloneReadBusy
       && !root.cloneProbeBusy
+      && !root.cloneRunBusy
       && device.connected
       && device.serialAvailable
       && device.readable
@@ -519,6 +538,127 @@ Panel {
     root.cloneReadBusy = false
   }
 
+  function clearCloneTransactionState() {
+    if (root.cloneRunBusy) return
+    root.cloneRunArmed = false
+    root.cloneRunSourceKey = ""
+    root.cloneRunTargetKey = ""
+    root.cloneRunResult = null
+    root.cloneRunError = ""
+  }
+
+  function cloneTransactionArmedForCurrentPair() {
+    return root.cloneRunArmed
+      && root.cloneSourceKey !== ""
+      && root.cloneTargetKey !== ""
+      && root.cloneRunSourceKey === root.cloneSourceKey
+      && root.cloneRunTargetKey === root.cloneTargetKey
+  }
+
+  function cloneTransactionEligible(device) {
+    var key = root.cloneIdentityKey(device)
+
+    if (key === "" || key !== root.cloneTargetKey) return false
+    if (root.cloneSourceKey === "" || root.cloneTargetKey === "") return false
+    if (root.cloneSourceKey === root.cloneTargetKey) return false
+
+    if (root.cloneRunBusy
+        || root.cloneProbeBusy
+        || root.cloneReadBusy)
+      return false
+
+    var source = root.deviceForIdentity(root.cloneSourceKey)
+    var target = root.deviceForIdentity(root.cloneTargetKey)
+
+    if (!source || !target) return false
+
+    return source.connected
+      && source.serialAvailable
+      && source.readable
+      && source.writable
+      && !source.locked
+      && target.connected
+      && target.serialAvailable
+      && target.readable
+      && target.writable
+      && !target.locked
+  }
+
+  function activateCloneTransaction(device) {
+    if (!root.cloneTransactionEligible(device)) return
+
+    var sourceKey = root.cloneSourceKey
+    var targetKey = root.cloneTargetKey
+
+    if (!root.cloneTransactionArmedForCurrentPair()) {
+      root.cloneRunArmed = true
+      root.cloneRunSourceKey = sourceKey
+      root.cloneRunTargetKey = targetKey
+      root.cloneRunResult = null
+      root.cloneRunError = ""
+      return
+    }
+
+    root.cloneRunArmed = false
+    root.cloneRunBusy = true
+    root.cloneRunResult = null
+    root.cloneRunError = ""
+
+    cloneRunProc.command = ["python3", root.cloneBackendPath, "clone",
+      "--source-identity-key", sourceKey,
+      "--target-identity-key", targetKey,
+      "--confirm-target-identity", targetKey]
+    cloneRunProc.running = true
+  }
+
+  function finishCloneTransaction(raw) {
+    var sourceKey = root.cloneRunSourceKey
+    var targetKey = root.cloneRunTargetKey
+
+    try {
+      var parsed = JSON.parse(String(raw || ""))
+
+      if (!parsed || parsed.operation !== "clone")
+        throw new Error("invalid operation")
+
+      if (parsed.status === "pass") {
+        var size = Number(parsed.imageSize || 0)
+        var sourceSha256 =
+          String(parsed.sourceSha256 || "").toLowerCase()
+        var targetSha256 =
+          String(parsed.targetSha256 || "").toLowerCase()
+
+        if (String(parsed.sourceIdentityKey || "") !== sourceKey
+            || String(parsed.targetIdentityKey || "") !== targetKey
+            || size <= 0
+            || Math.floor(size) !== size
+            || !root.validCloneSha256(sourceSha256)
+            || !root.validCloneSha256(targetSha256)
+            || sourceSha256 !== targetSha256)
+          throw new Error("invalid clone evidence")
+
+        root.cloneRunResult = {
+          sourceIdentityKey: sourceKey,
+          targetIdentityKey: targetKey,
+          imageSize: size,
+          sourceSha256: sourceSha256,
+          targetSha256: targetSha256
+        }
+        root.cloneRunError = ""
+      } else {
+        root.cloneRunResult = null
+        root.cloneRunError =
+          String(parsed.reason || "clone-failed")
+      }
+    } catch (error) {
+      root.cloneRunResult = null
+      root.cloneRunError = "invalid-clone-result"
+    }
+
+    root.cloneRunBusy = false
+    root.cloneRunArmed = false
+  }
+
   function cloneReadSizeLabel(result) {
     if (!result) return ""
     var size = Number(result.imageSize || 0)
@@ -558,6 +698,10 @@ Panel {
     }
     if (root.cloneTargetKey !== "" && !connected[root.cloneTargetKey])
       root.cloneTargetKey = ""
+
+    if (root.cloneRunArmed
+        && !root.cloneTransactionArmedForCurrentPair())
+      root.clearCloneTransactionState()
 
     var results = {}
     var errors = {}
@@ -836,6 +980,7 @@ Panel {
         { id: "target", label: "TARGET", enabled: root.canSelectCloneTarget(device), active: root.cloneTargetKey === root.cloneIdentityKey(device), note: "" },
         { id: "probe", label: "PROBE", enabled: root.cloneProbeEligible(device), active: false, note: "RESETS BOARD" },
         { id: "read-source", label: "READ SOURCE", enabled: root.cloneSourceReadEligible(device), active: false, note: "RESETS BOARD" },
+        { id: "clone", label: root.cloneTransactionArmedForCurrentPair() && root.cloneTargetKey === root.cloneIdentityKey(device) ? "CONFIRM CLONE" : "CLONE TARGET", enabled: root.cloneTransactionEligible(device), active: root.cloneTransactionArmedForCurrentPair() && root.cloneTargetKey === root.cloneIdentityKey(device), note: "OVERWRITES TARGET" },
         { id: "rename", label: "RENAME", enabled: true, active: false, note: "" },
         { id: "baud", label: "BAUD RATE", enabled: serialSettingsAvailable, active: false, note: "" },
         { id: "line-ending", label: "LINE ENDING", enabled: serialSettingsAvailable, active: false, note: "" },
@@ -946,6 +1091,10 @@ Panel {
     } else if (action.id === "read-source") {
       root.startCloneSourceRead(device)
       root.closeActions()
+    } else if (action.id === "clone") {
+      root.activateCloneTransaction(device)
+      if (root.cloneRunBusy)
+        root.closeActions()
     } else if (action.id === "rename") {
       root.beginRename(device)
       root.closeActions()
@@ -1146,6 +1295,18 @@ Panel {
     }
   }
 
+  Process {
+    id: cloneRunProc
+    command: []
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.finishCloneTransaction(text)
+    }
+    stderr: StdioCollector {
+      waitForEnd: true
+    }
+  }
+
   Timer {
     interval: root.opened ? 1000 : 2500
     repeat: true
@@ -1161,7 +1322,9 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰕓" + (root.connectedDevices.length > 1 ? " " + root.connectedDevices.length : "")
+    text: root.cloneRunBusy ? "CLONE"
+      : "󰕓" + (root.connectedDevices.length > 1
+        ? " " + root.connectedDevices.length : "")
     onPressed: function(b) { root.toggle() }
   }
 
@@ -1669,6 +1832,8 @@ Panel {
         }
 
         CloneActionButton {
+          visible: root.cloneSourceKey
+            === root.cloneIdentityKey(deviceColumn.modelData)
           label: root.cloneReadBusy
             && root.cloneReadKey === root.cloneIdentityKey(deviceColumn.modelData)
             ? "READING" : "READ SOURCE"
@@ -1678,6 +1843,47 @@ Panel {
             : "Select SOURCE first"
           onActivated: root.startCloneSourceRead(deviceColumn.modelData)
         }
+      }
+
+      Row {
+        visible: cloneActions.visible
+          && root.cloneTargetKey
+            === root.cloneIdentityKey(deviceColumn.modelData)
+        spacing: Style.space(5)
+
+        CloneActionButton {
+          label: root.cloneRunBusy
+            && root.cloneRunTargetKey
+              === root.cloneIdentityKey(deviceColumn.modelData)
+            ? "CLONING"
+            : (root.cloneTransactionArmedForCurrentPair()
+              ? "CONFIRM CLONE"
+              : "CLONE TARGET")
+          enabled:
+            root.cloneTransactionEligible(deviceColumn.modelData)
+          active: root.cloneTransactionArmedForCurrentPair()
+          tooltipText: root.cloneTransactionArmedForCurrentPair()
+            ? "Confirm destructive raw flash clone to TARGET"
+            : "Arm raw flash clone for this TARGET"
+          onActivated:
+            root.activateCloneTransaction(deviceColumn.modelData)
+        }
+      }
+
+      Text {
+        visible: cloneActions.visible
+          && root.cloneTargetKey
+            === root.cloneIdentityKey(deviceColumn.modelData)
+        text: root.cloneRunBusy
+          ? "CLONE WRITES TARGET FLASH"
+          : (root.cloneTransactionArmedForCurrentPair()
+            ? "DESTRUCTIVE · CONFIRM TARGET"
+            : "CLONE OVERWRITES TARGET FLASH")
+        color: root.bar.urgent
+        font.family: root.bar.fontFamily
+        font.pixelSize: Style.font.caption
+        font.bold: true
+        font.letterSpacing: 1.0
       }
 
       Text {
@@ -1713,11 +1919,22 @@ Panel {
           ? root.cloneReadResult : null
         readonly property string readError: root.cloneSourceKey === String(deviceColumn.modelData.identityKey || "")
           ? root.cloneReadError : ""
+        readonly property var runResult: root.cloneRunResult
+          && root.cloneRunResult.targetIdentityKey
+            === String(deviceColumn.modelData.identityKey || "")
+          ? root.cloneRunResult : null
+        readonly property string runError:
+          root.cloneRunTargetKey
+            === String(deviceColumn.modelData.identityKey || "")
+          ? root.cloneRunError : ""
         readonly property string identityKey: String(deviceColumn.modelData.identityKey || "")
         visible: evidence !== null
           || probeError !== ""
           || readResult !== null
           || readError !== ""
+          || runResult !== null
+          || runError !== ""
+          || root.cloneRunTargetKey === identityKey
           || root.cloneSourceKey === identityKey
           || root.cloneTargetKey === identityKey
           || (root.cloneProbeBusy && root.cloneProbeKey === identityKey)
@@ -1849,8 +2066,96 @@ Panel {
         }
 
         Text {
+          visible: root.cloneRunBusy
+            && root.cloneRunTargetKey === cloneEvidence.identityKey
+          text: "CLONE · RUNNING"
+          color: root.bar.foreground
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.0
+        }
+
+        Item {
+          id: cloneRunProgress
+          visible: root.cloneRunBusy
+            && root.cloneRunTargetKey === cloneEvidence.identityKey
+          width: parent.width
+          height: Style.space(2)
+          clip: true
+
+          Rectangle {
+            anchors.fill: parent
+            color: root.bar.foreground
+            opacity: 0.10
+          }
+
+          Rectangle {
+            id: cloneRunProgressSegment
+            width: Math.max(
+              Style.space(42),
+              cloneRunProgress.width * 0.22
+            )
+            height: parent.height
+            color: root.bar.foreground
+            opacity: 0.65
+
+            NumberAnimation on x {
+              running: cloneRunProgress.visible
+              loops: Animation.Infinite
+              from: -cloneRunProgressSegment.width
+              to: cloneRunProgress.width
+              duration: 1100
+              easing.type: Easing.Linear
+            }
+          }
+        }
+
+
+        Text {
+          visible: cloneEvidence.runError !== ""
+          text: "CLONE FAILED · " + cloneEvidence.runError
+          color: root.bar.urgent
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          width: parent.width
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: cloneEvidence.runResult !== null
+          text: "CLONE PASS · "
+            + root.cloneReadSizeLabel(cloneEvidence.runResult)
+          color: root.readyTone
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.0
+        }
+
+        Text {
+          visible: cloneEvidence.runResult !== null
+          text: "SHA-256 "
+            + (cloneEvidence.runResult
+              ? cloneEvidence.runResult.targetSha256
+              : "")
+          color: root.bar.foreground
+          opacity: 0.75
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          width: parent.width
+          wrapMode: Text.WrapAnywhere
+        }
+
+        Text {
           visible: root.cloneTargetKey === cloneEvidence.identityKey
-          text: "TARGET WRITE LOCKED"
+            && !root.cloneRunBusy
+            && cloneEvidence.runResult === null
+            && cloneEvidence.runError === ""
+          text: root.cloneTransactionArmedForCurrentPair()
+            ? "TARGET ARMED · CONFIRM CLONE"
+            : "TARGET READY FOR GUARDED CLONE"
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
@@ -2310,14 +2615,14 @@ Panel {
 
       Text {
         visible: actionMenuSurface.device
-          && root.cloneTargetKey === root.cloneIdentityKey(actionMenuSurface.device)
-        text: "TARGET WRITE LOCKED"
+          && root.cloneTargetKey
+            === root.cloneIdentityKey(actionMenuSurface.device)
+        text: "CLONE TARGET · TWO-STEP CONFIRMATION"
         color: root.bar.foreground
         opacity: 0.58
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.caption
         font.bold: true
-        font.letterSpacing: 0.8
       }
     }
   }
