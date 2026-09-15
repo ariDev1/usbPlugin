@@ -62,6 +62,29 @@ If a port is inaccessible, **Grant access** opens a terminal, explains the
 persistent group-membership change, and asks for confirmation before running
 `sudo usermod`. Log out and back in once after granting access.
 
+## Keyboard
+
+USB Boards supports keyboard-first control for the selected device. A shortcut
+works only when its existing action is available.
+
+| Key | Action |
+| --- | --- |
+| `S` | SOURCE |
+| `T` | TARGET |
+| `P` | PROBE |
+| `C` | COPY PATH |
+| `N` | RENAME |
+| `M` | OPEN MONITOR |
+| `A` | GRANT ACCESS |
+| `D` | DETAILS for an offline device |
+| `R` | refresh |
+
+Use `j` / `k` or the arrow keys to select a device. Press `Enter` to open
+ACTIONS. Use Enter to activate an action and Esc to close the popup.
+
+`READ SOURCE` and `CLONE TARGET` have no direct shortcut. Use ACTIONS so these
+operations keep their existing state checks and confirmation workflow.
+
 ## USB Identity
 
 USB Boards separates detection, physical identity, and the current connection

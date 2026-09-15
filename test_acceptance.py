@@ -318,5 +318,41 @@ class AvrRuntimePackagingRedGateTests(unittest.TestCase):
         )
 
 
+class ReleaseHardeningContractTests(unittest.TestCase):
+    def test_ci_runs_on_development_and_master_pushes(self):
+        source = Path(".github/workflows/ci.yml").read_text()
+        start = source.index("  push:\n")
+        end = source.index("  pull_request:\n", start)
+        push_block = source[start:end]
+
+        self.assertIn("      - development\n", push_block)
+        self.assertIn("      - master\n", push_block)
+
+    def test_readme_documents_keyboard_first_workflow(self):
+        source = Path("README.md").read_text()
+        start = source.find("## Keyboard")
+        self.assertGreaterEqual(start, 0)
+
+        end = source.find("\n## ", start + 1)
+        block = source[start:] if end < 0 else source[start:end]
+
+        for required in (
+            "`S`", "SOURCE",
+            "`T`", "TARGET",
+            "`P`", "PROBE",
+            "`C`", "COPY PATH",
+            "`N`", "RENAME",
+            "`M`", "OPEN MONITOR",
+            "`A`", "GRANT ACCESS",
+            "`D`", "DETAILS",
+            "`R`", "refresh",
+            "`Enter`", "ACTIONS",
+            "READ SOURCE",
+            "CLONE TARGET",
+            "no direct shortcut",
+        ):
+            self.assertIn(required, block)
+
+
 if __name__ == "__main__":
     unittest.main()

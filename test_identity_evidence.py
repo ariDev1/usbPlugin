@@ -113,9 +113,9 @@ class PanelIdentityEvidenceContractTests(unittest.TestCase):
 
 
 class VersionContractTests(unittest.TestCase):
-    def test_development_candidate_is_v040(self):
+    def test_development_candidate_is_v050(self):
         manifest = json.loads(Path(__file__).with_name("manifest.json").read_text())
-        self.assertEqual(manifest["version"], "0.4.0")
+        self.assertEqual(manifest["version"], "0.5.0")
 
 
 if __name__ == "__main__":
