@@ -1444,6 +1444,153 @@ class CloneUiKeyboardRackCursorContractTests(unittest.TestCase):
         self.assertNotIn("border.color: root.cursorActive", block)
 
 
+class CloneUiMultiFamilyEvidenceContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def function_block(self, name, next_name):
+        start = self.source.find("function " + name)
+        if start < 0:
+            return ""
+        end = self.source.find(
+            "function " + next_name,
+            start,
+        )
+        return (
+            self.source[start:]
+            if end < 0
+            else self.source[start:end]
+        )
+
+    def test_probe_labels_are_clone_family_aware(self):
+        device_block = self.function_block(
+            "cloneProbeDeviceLabel(probe)",
+            "cloneProbeFlashLabel(probe)",
+        )
+        detail_block = self.function_block(
+            "cloneProbeFlashLabel(probe)",
+            "setDeviceBaud(device, baud)",
+        )
+
+        self.assertIn(
+            '"avr-stk500v1-serial"',
+            device_block,
+        )
+        self.assertIn(
+            '"AVR SERIAL BOOTLOADER"',
+            device_block,
+        )
+        self.assertIn(
+            "probe.protocol",
+            device_block,
+        )
+        self.assertIn(
+            "probe.bootloaderReportedSignature",
+            detail_block,
+        )
+        self.assertIn(
+            "probe.baud",
+            detail_block,
+        )
+
+    def test_probe_result_rejects_unknown_clone_family(self):
+        block = self.function_block(
+            "finishCloneProbe(raw)",
+            "cloneProbeDeviceLabel(probe)",
+        )
+
+        self.assertIn(
+            "validCloneFamily",
+            block,
+        )
+
+    def test_source_read_retains_clone_family(self):
+        block = self.function_block(
+            "finishCloneSourceRead(raw)",
+            "clearCloneTransactionState()",
+        )
+
+        self.assertIn(
+            "parsed.cloneFamily",
+            block,
+        )
+        self.assertIn(
+            "cloneFamily: family",
+            block,
+        )
+        self.assertIn(
+            "validCloneFamily",
+            block,
+        )
+
+    def test_clone_result_validates_family_specific_evidence(self):
+        block = self.function_block(
+            "finishCloneTransaction(raw)",
+            "cloneReadSizeLabel(result)",
+        )
+
+        self.assertIn(
+            'family === "esp32-classic-spi-flash"',
+            block,
+        )
+        self.assertIn(
+            'family === "avr-stk500v1-serial"',
+            block,
+        )
+        self.assertIn(
+            "parsed.applicationSha256",
+            block,
+        )
+        self.assertIn(
+            "parsed.bootloaderSha256",
+            block,
+        )
+        self.assertIn(
+            "applicationSha256: applicationSha256",
+            block,
+        )
+        self.assertIn(
+            "bootloaderSha256: bootloaderSha256",
+            block,
+        )
+
+    def test_avr_verification_evidence_is_visible(self):
+        self.assertIn(
+            '"APPLICATION SHA-256 "',
+            self.source,
+        )
+        self.assertIn(
+            '"BOOTLOADER SHA-256 "',
+            self.source,
+        )
+        self.assertIn(
+            '"AVR APPLICATION · VERIFIED"',
+            self.source,
+        )
+
+    def test_clone_action_wording_is_family_neutral(self):
+        self.assertNotIn(
+            "raw flash clone",
+            self.source,
+        )
+        self.assertIn(
+            "guarded clone to TARGET",
+            self.source,
+        )
+
+    def test_clone_size_label_supports_kib(self):
+        block = self.function_block(
+            "cloneReadSizeLabel(result)",
+            "setCloneProbeEvidence(key, probe, errorText)",
+        )
+
+        self.assertIn(
+            'String(size / 1024) + " KiB"',
+            block,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
 

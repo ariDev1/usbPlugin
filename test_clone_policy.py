@@ -263,5 +263,61 @@ class AdditionalPairPolicyTests(unittest.TestCase):
         self.assertEqual(decision.reason, "security-restricted")
 
 
+def valid_avr_probe():
+    return {
+        "ok": True,
+        "cloneFamily": "avr-stk500v1-serial",
+        "protocol": "stk500v1",
+        "baud": 115200,
+        "bootloaderReportedSignature": "1e950f",
+        "rawReadSupported": True,
+        "rawWriteCandidate": True,
+        "error": "",
+    }
+
+
+class AvrSourcePolicyRedGateTests(unittest.TestCase):
+    def test_validated_avr_source_is_read_ready(self):
+        decision = evaluate_source(
+            scanner_device("avr-source"),
+            valid_avr_probe(),
+        )
+
+        self.assertTrue(
+            decision.allowed,
+            decision.reason,
+        )
+        self.assertEqual(decision.state, "ready")
+        self.assertEqual(decision.reason, "")
+        self.assertEqual(
+            decision.clone_family,
+            "avr-stk500v1-serial",
+        )
+
+
+class AvrPairPolicyRedGateTests(unittest.TestCase):
+    def test_matching_validated_avr_pair_is_compatible(self):
+        source = scanner_device("avr-source")
+        target = scanner_device("avr-target")
+
+        decision = evaluate_pair(
+            source,
+            target,
+            valid_avr_probe(),
+            valid_avr_probe(),
+        )
+
+        self.assertTrue(
+            decision.allowed,
+            decision.reason,
+        )
+        self.assertEqual(decision.state, "ready")
+        self.assertEqual(decision.reason, "")
+        self.assertEqual(
+            decision.clone_family,
+            "avr-stk500v1-serial",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

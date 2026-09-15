@@ -24,6 +24,15 @@ VALIDATED_READ_PROFILES = {
 }
 
 
+VALIDATED_AVR_SERIAL_PROFILES = {
+    (
+        "stk500v1",
+        115200,
+        "1e950f",
+    ): "avr-stk500v1-serial",
+}
+
+
 @dataclass(frozen=True)
 class CloneDecision:
     allowed: bool
@@ -107,10 +116,55 @@ def _probe_gate(probe: dict[str, object] | None, *, require_validated_profile: b
     return None
 
 
+
+def _avr_profile_key(probe: dict[str, object]) -> tuple[object, ...]:
+    return (
+        probe.get("protocol"),
+        probe.get("baud"),
+        str(probe.get("bootloaderReportedSignature") or "").lower(),
+    )
+
+
+def _avr_probe_gate(
+    probe: dict[str, object] | None,
+) -> CloneDecision | None:
+    if not isinstance(probe, dict) or probe.get("ok") is not True:
+        return _reject("probe-failed")
+
+    required = (
+        "cloneFamily",
+        "protocol",
+        "baud",
+        "bootloaderReportedSignature",
+        "rawReadSupported",
+    )
+
+    if any(name not in probe for name in required):
+        return _reject("probe-incomplete")
+
+    if probe.get("cloneFamily") != "avr-stk500v1-serial":
+        return _reject("incompatible", "incompatible")
+
+    if probe.get("rawReadSupported") is not True:
+        return _reject("raw-read-unsupported")
+
+    if _avr_profile_key(probe) not in VALIDATED_AVR_SERIAL_PROFILES:
+        return _reject("unsupported-avr-profile")
+
+    return None
+
 def evaluate_source(device: dict[str, object], probe: dict[str, object]) -> CloneDecision:
     rejected = _device_gate(device)
     if rejected:
         return rejected
+
+    if probe.get("cloneFamily") == "avr-stk500v1-serial":
+        rejected = _avr_probe_gate(probe)
+        if rejected:
+            return rejected
+        family = VALIDATED_AVR_SERIAL_PROFILES[_avr_profile_key(probe)]
+        return CloneDecision(True, "ready", "", family)
+
     rejected = _probe_gate(probe, require_validated_profile=True)
     if rejected:
         return rejected
@@ -136,6 +190,21 @@ def evaluate_pair(
     target_key = str(target_device.get("identityKey") or "")
     if source_key == target_key:
         return _reject("same-device", "incompatible")
+
+    if source_decision.clone_family == "avr-stk500v1-serial":
+        target_probe_rejection = _avr_probe_gate(target_probe)
+        if target_probe_rejection:
+            return target_probe_rejection
+
+        if _avr_profile_key(source_probe) != _avr_profile_key(target_probe):
+            return _reject("incompatible", "incompatible")
+
+        return CloneDecision(
+            True,
+            "ready",
+            "",
+            source_decision.clone_family,
+        )
 
     target_probe_rejection = _probe_gate(target_probe, require_validated_profile=False)
     if target_probe_rejection:

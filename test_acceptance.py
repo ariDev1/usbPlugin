@@ -175,6 +175,7 @@ class InstallerCopyContractTests(unittest.TestCase):
         "usb_clone.py",
         "clone_policy.py",
         "clone_probe.py",
+        "avr_clone.py",
     )
 
     def test_installer_copies_complete_runtime_set(self):
@@ -196,6 +197,7 @@ class DevelopmentCopyGuardTests(unittest.TestCase):
         "usb_clone.py",
         "clone_policy.py",
         "clone_probe.py",
+        "avr_clone.py",
     )
 
     def write_runtime_files(self, directory, *, prefix="same"):
@@ -294,6 +296,24 @@ class DevelopmentCopyGuardTests(unittest.TestCase):
                     project,
                     self.environment(root),
                 )
+
+
+class AvrRuntimePackagingRedGateTests(unittest.TestCase):
+    def test_acceptance_runtime_set_includes_avr_backend(self):
+        acceptance = load_module()
+
+        self.assertIn(
+            "avr_clone.py",
+            acceptance.RUNTIME_FILES,
+        )
+
+    def test_installer_copies_avr_backend(self):
+        source = Path("install.sh").read_text()
+
+        self.assertIn(
+            "avr_clone.py",
+            source,
+        )
 
 
 if __name__ == "__main__":

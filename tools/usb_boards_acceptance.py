@@ -24,6 +24,7 @@ RUNTIME_FILES = (
     "usb_clone.py",
     "clone_policy.py",
     "clone_probe.py",
+    "avr_clone.py",
 )
 IDENTITY_FIELDS = (
     "identityKey",

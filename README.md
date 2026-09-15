@@ -17,6 +17,7 @@ does not require third-party Python packages or a background service.
 - remembers device names and monitor profiles while devices are disconnected
 - includes a reconnecting serial monitor with selectable format and line ending
 - supports timestamped RX/TX session logs with private file permissions
+- provides guarded clone workflows for validated ESP32 and AVR serial profiles
 
 ## Install
 
@@ -98,6 +99,27 @@ detection result as an exact board identity.
 | Generic serial bridges | CH34x/CH91xx, CP210x, FTDI, and PL2303 bridge only |
 
 A generic serial bridge does not prove which development board is behind it.
+
+## Guarded Clone
+
+Clone operations use active hardware evidence. They do not change the passive
+USB board-identification result.
+
+The current validated clone families are:
+
+- `esp32-classic-spi-flash`: full raw SPI flash clone for validated profiles
+- `avr-stk500v1-serial`: 32 KiB serial flash access through STK500v1
+
+The AVR path writes only the application region `0x0000-0x7dff`. It preserves
+and validates the bootloader region `0x7e00-0x7fff`. It does not clone EEPROM,
+fuses, lock bits, calibration data, or factory identity.
+
+Target writes use explicit SOURCE and TARGET identities, two-step operator
+confirmation, connection-continuity checks, and independent readback
+verification.
+
+See [USB Identity Model](docs/USB_IDENTITY_MODEL.md) for the evidence and
+verification boundaries.
 
 ## Serial Monitor and Session Logging
 

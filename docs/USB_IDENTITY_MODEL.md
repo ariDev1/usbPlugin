@@ -228,14 +228,39 @@ eFuses are evidence only in the current architecture. USB Boards can read
 security state for compatibility decisions. It does not copy, burn, or modify
 eFuses as part of a normal clone operation.
 
-The current implementation boundary is explicit:
+The current validated clone families are explicit.
 
-```text
-SOURCE READ: IMPLEMENTED
-TARGET WRITE: NOT IMPLEMENTED
-TARGET VERIFY: NOT IMPLEMENTED
-CLONE PASS: NOT CLAIMED
-```
+### ESP32 Classic SPI Flash
+
+`esp32-classic-spi-flash` uses validated ESP32 profiles. The transaction reads
+the complete raw SPI flash, writes the validated target, performs an independent
+full target readback, and requires SHA-256 equality.
+
+### AVR STK500v1 Serial
+
+`avr-stk500v1-serial` uses the measured STK500v1 serial bootloader interface at
+115200 baud.
+
+The validated flash geometry is:
+
+    full flash       0x0000-0x7fff   32768 bytes
+    application      0x0000-0x7dff   32256 bytes
+    bootloader       0x7e00-0x7fff     512 bytes
+
+The clone transaction reads the complete 32 KiB SOURCE image but writes only
+the application region. It then performs an independent complete TARGET
+readback.
+
+A successful AVR clone requires:
+
+1. validated 32 KiB SOURCE and TARGET geometry
+2. equal application SHA-256 values
+3. the validated protected bootloader SHA-256 on SOURCE and TARGET
+4. current SOURCE and TARGET connection continuity
+
+The AVR path does not clone EEPROM, fuses, lock bits, calibration data, or
+factory identity. The bootloader-reported signature is serial-interface
+evidence. It is not proof of the physical MCU model.
 
 ## Fail-Closed Behavior
 Invalid JSON fails closed. An unsupported schema version fails closed. An invalid store shape fails closed.

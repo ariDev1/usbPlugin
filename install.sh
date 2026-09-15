@@ -12,6 +12,7 @@ runtime_files=(
   usb_clone.py
   clone_policy.py
   clone_probe.py
+  avr_clone.py
 )
 
 # The shell rejects symlinks inside ~/.config/omarchy/plugins/, so install

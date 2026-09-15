@@ -15,6 +15,13 @@ import tempfile
 
 from clone_policy import evaluate_source, evaluate_write_pair
 from clone_probe import run_esp32_probe
+from avr_clone import (
+    FULL_FLASH_SIZE as AVR_FLASH_SIZE,
+    read_avr_flash,
+    run_avr_probe,
+    verify_clone_evidence,
+    write_application,
+)
 
 
 FLASH_SIZE = 4 * 1024 * 1024
@@ -204,6 +211,37 @@ def _run_target_readback(runner, path: str, image_path: Path) -> None:
         raise RuntimeError("target-readback-failed")
 
 
+
+def probe_clone_family(
+    path: str,
+    *,
+    runner=subprocess.run,
+) -> dict[str, object]:
+    esp32_probe = run_esp32_probe(
+        path,
+        runner=runner,
+    )
+
+    if esp32_probe.get("ok") is True:
+        return esp32_probe
+
+    avr_probe = run_avr_probe(
+        path,
+        runner=runner,
+    )
+
+    if avr_probe.get("ok") is True:
+        return avr_probe
+
+    return {
+        "ok": False,
+        "cloneFamily": "",
+        "rawReadSupported": False,
+        "rawWriteCandidate": False,
+        "error": "unsupported-clone-family",
+    }
+
+
 def read_source(
     identity_key: str,
     *,
@@ -220,7 +258,7 @@ def read_source(
         initial_token = read_connection_token(source)
         path = device_path(source)
 
-        probe = run_esp32_probe(path, runner=runner)
+        probe = probe_clone_family(path, runner=runner)
         decision = evaluate_source(source, probe)
         if not decision.allowed:
             result = _failure(decision.reason)
@@ -230,12 +268,29 @@ def read_source(
             image_path = transaction_dir / "source.bin"
             _prepare_private_image(image_path)
 
-            _run_source_read(runner, path, image_path)
+            if decision.clone_family == "esp32-classic-spi-flash":
+                expected_size = FLASH_SIZE
+                _run_source_read(
+                    runner,
+                    path,
+                    image_path,
+                )
+            elif decision.clone_family == "avr-stk500v1-serial":
+                expected_size = AVR_FLASH_SIZE
+                read_avr_flash(
+                    path,
+                    image_path,
+                    runner=runner,
+                )
+            else:
+                raise RuntimeError("unsupported-clone-family")
+
             try:
                 size = image_path.stat().st_size
             except OSError as error:
                 raise RuntimeError("source-read-failed") from error
-            if size != FLASH_SIZE:
+
+            if size != expected_size:
                 raise RuntimeError("source-size-mismatch")
             os.chmod(image_path, 0o600)
             digest = _sha256(image_path)
@@ -293,8 +348,14 @@ def clone_flash(
         source_path = device_path(source)
         target_path = device_path(target)
 
-        source_probe = run_esp32_probe(source_path, runner=runner)
-        target_probe = run_esp32_probe(target_path, runner=runner)
+        source_probe = probe_clone_family(
+            source_path,
+            runner=runner,
+        )
+        target_probe = probe_clone_family(
+            target_path,
+            runner=runner,
+        )
 
         decision = evaluate_write_pair(
             source,
@@ -316,14 +377,32 @@ def clone_flash(
             _prepare_private_image(target_image)
 
             # Capture one point-in-time SOURCE snapshot.
-            _run_source_read(runner, source_path, source_image)
+            source_avr_evidence = None
+            target_avr_evidence = None
+
+            if decision.clone_family == "esp32-classic-spi-flash":
+                expected_source_size = FLASH_SIZE
+                _run_source_read(
+                    runner,
+                    source_path,
+                    source_image,
+                )
+            elif decision.clone_family == "avr-stk500v1-serial":
+                expected_source_size = AVR_FLASH_SIZE
+                source_avr_evidence = read_avr_flash(
+                    source_path,
+                    source_image,
+                    runner=runner,
+                )
+            else:
+                raise RuntimeError("unsupported-clone-family")
 
             try:
                 source_size = source_image.stat().st_size
             except OSError as error:
                 raise RuntimeError("source-read-failed") from error
 
-            if source_size != FLASH_SIZE:
+            if source_size != expected_source_size:
                 raise RuntimeError("source-size-mismatch")
 
             os.chmod(source_image, 0o600)
@@ -348,26 +427,52 @@ def clone_flash(
                 raise RuntimeError("target-connection-changed")
 
             # This is the first destructive operation.
-            # Keep the target in the ROM bootloader after the write.
-            _run_target_write(
-                runner,
-                target_path,
-                source_image,
-            )
+            if decision.clone_family == "esp32-classic-spi-flash":
+                # Keep the ESP32 target in the ROM bootloader.
+                _run_target_write(
+                    runner,
+                    target_path,
+                    source_image,
+                )
+            elif decision.clone_family == "avr-stk500v1-serial":
+                write_application(
+                    target_path,
+                    source_image,
+                    transaction_dir / "source-application.bin",
+                    runner=runner,
+                )
+            else:
+                raise RuntimeError("unsupported-clone-family")
 
             # Independently read the complete TARGET flash.
-            _run_target_readback(
-                runner,
-                target_path,
-                target_image,
-            )
+            if decision.clone_family == "esp32-classic-spi-flash":
+                _run_target_readback(
+                    runner,
+                    target_path,
+                    target_image,
+                )
+            elif decision.clone_family == "avr-stk500v1-serial":
+                target_avr_evidence = read_avr_flash(
+                    target_path,
+                    target_image,
+                    runner=runner,
+                )
+            else:
+                raise RuntimeError("unsupported-clone-family")
 
             try:
                 target_size = target_image.stat().st_size
             except OSError as error:
                 raise RuntimeError("target-readback-failed") from error
 
-            if target_size != FLASH_SIZE:
+            if decision.clone_family == "esp32-classic-spi-flash":
+                expected_target_size = FLASH_SIZE
+            elif decision.clone_family == "avr-stk500v1-serial":
+                expected_target_size = AVR_FLASH_SIZE
+            else:
+                raise RuntimeError("unsupported-clone-family")
+
+            if target_size != expected_target_size:
                 raise RuntimeError("target-size-mismatch")
 
             os.chmod(target_image, 0o600)
@@ -383,9 +488,6 @@ def clone_flash(
             if read_connection_token(final_target) != target_token:
                 raise RuntimeError("target-connection-changed")
 
-            if target_digest != source_digest:
-                raise RuntimeError("verification-mismatch")
-
             result = {
                 "operation": "clone",
                 "status": "pass",
@@ -396,6 +498,34 @@ def clone_flash(
                 "sourceSha256": source_digest,
                 "targetSha256": target_digest,
             }
+
+            if decision.clone_family == "esp32-classic-spi-flash":
+                if target_digest != source_digest:
+                    raise RuntimeError("verification-mismatch")
+
+            elif decision.clone_family == "avr-stk500v1-serial":
+                if (
+                    source_avr_evidence is None
+                    or target_avr_evidence is None
+                ):
+                    raise RuntimeError(
+                        "avr-verification-evidence-missing"
+                    )
+
+                avr_verification = verify_clone_evidence(
+                    source_avr_evidence,
+                    target_avr_evidence,
+                )
+
+                result["applicationSha256"] = (
+                    avr_verification.application_sha256
+                )
+                result["bootloaderSha256"] = (
+                    avr_verification.bootloader_sha256
+                )
+
+            else:
+                raise RuntimeError("unsupported-clone-family")
 
     except RuntimeError as error:
         result = _clone_failure(str(error))
@@ -419,7 +549,7 @@ def _probe_identity(identity_key: str, *, scanner, runner) -> dict[str, object]:
             "status": "failed",
             "reason": str(error),
         }
-    probe = run_esp32_probe(path, runner=runner)
+    probe = probe_clone_family(path, runner=runner)
     if probe.get("ok") is not True:
         return {
             "operation": "probe",
@@ -482,6 +612,7 @@ __all__ = [
     "ConnectionToken",
     "main",
     "device_path",
+    "probe_clone_family",
     "read_connection_token",
     "read_source",
     "clone_flash",

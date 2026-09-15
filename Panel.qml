@@ -501,6 +501,12 @@ Panel {
     return /^[0-9a-f]{64}$/.test(String(value || ""))
   }
 
+  function validCloneFamily(value) {
+    var family = String(value || "")
+    return family === "esp32-classic-spi-flash"
+      || family === "avr-stk500v1-serial"
+  }
+
   function finishCloneSourceRead(raw) {
     var key = root.cloneReadKey
     if (key === "") return
@@ -518,12 +524,21 @@ Panel {
       if (parsed.status === "pass") {
         var size = Number(parsed.imageSize || 0)
         var sha256 = String(parsed.sha256 || "").toLowerCase()
+        var family = String(parsed.cloneFamily || "")
+
         if (String(parsed.identityKey || "") !== key
+            || !root.validCloneFamily(family)
             || size <= 0
             || Math.floor(size) !== size
             || !root.validCloneSha256(sha256))
           throw new Error("invalid read evidence")
-        root.cloneReadResult = { identityKey: key, imageSize: size, sha256: sha256 }
+
+        root.cloneReadResult = {
+          identityKey: key,
+          cloneFamily: family,
+          imageSize: size,
+          sha256: sha256
+        }
         root.cloneReadError = ""
       } else {
         root.cloneReadResult = null
@@ -622,14 +637,20 @@ Panel {
         throw new Error("invalid operation")
 
       if (parsed.status === "pass") {
+        var family = String(parsed.cloneFamily || "")
         var size = Number(parsed.imageSize || 0)
         var sourceSha256 =
           String(parsed.sourceSha256 || "").toLowerCase()
         var targetSha256 =
           String(parsed.targetSha256 || "").toLowerCase()
+        var applicationSha256 =
+          String(parsed.applicationSha256 || "").toLowerCase()
+        var bootloaderSha256 =
+          String(parsed.bootloaderSha256 || "").toLowerCase()
 
         if (String(parsed.sourceIdentityKey || "") !== sourceKey
             || String(parsed.targetIdentityKey || "") !== targetKey
+            || !root.validCloneFamily(family)
             || size <= 0
             || Math.floor(size) !== size
             || !root.validCloneSha256(sourceSha256)
@@ -637,12 +658,25 @@ Panel {
             || sourceSha256 !== targetSha256)
           throw new Error("invalid clone evidence")
 
+        if (family === "esp32-classic-spi-flash") {
+          // Full-image SHA-256 equality is the ESP32 contract.
+        } else if (family === "avr-stk500v1-serial") {
+          if (!root.validCloneSha256(applicationSha256)
+              || !root.validCloneSha256(bootloaderSha256))
+            throw new Error("invalid AVR clone evidence")
+        } else {
+          throw new Error("unsupported clone family")
+        }
+
         root.cloneRunResult = {
           sourceIdentityKey: sourceKey,
           targetIdentityKey: targetKey,
+          cloneFamily: family,
           imageSize: size,
           sourceSha256: sourceSha256,
-          targetSha256: targetSha256
+          targetSha256: targetSha256,
+          applicationSha256: applicationSha256,
+          bootloaderSha256: bootloaderSha256
         }
         root.cloneRunError = ""
       } else {
@@ -664,6 +698,8 @@ Panel {
     var size = Number(result.imageSize || 0)
     if (size > 0 && size % (1024 * 1024) === 0)
       return String(size / (1024 * 1024)) + " MiB"
+    if (size > 0 && size % 1024 === 0)
+      return String(size / 1024) + " KiB"
     return size > 0 ? String(size) + " B" : ""
   }
 
@@ -739,7 +775,10 @@ Panel {
       var parsed = JSON.parse(String(raw || ""))
       if (!parsed || parsed.operation !== "probe") throw new Error("invalid operation")
       if (parsed.status === "pass") {
-        if (String(parsed.identityKey || "") !== key || !parsed.probe || parsed.probe.ok !== true)
+        if (String(parsed.identityKey || "") !== key
+            || !parsed.probe
+            || parsed.probe.ok !== true
+            || !root.validCloneFamily(parsed.probe.cloneFamily))
           throw new Error("identity mismatch")
         root.setCloneProbeEvidence(key, parsed.probe, "")
       } else {
@@ -754,19 +793,67 @@ Panel {
 
   function cloneProbeDeviceLabel(probe) {
     if (!probe) return ""
-    var model = String(probe.chipModel || "UNKNOWN ESPRESSIF DEVICE")
+
+    var family = String(probe.cloneFamily || "")
+
+    if (family === "avr-stk500v1-serial") {
+      var protocol = String(probe.protocol || "").toUpperCase()
+      return protocol === ""
+        ? "AVR SERIAL BOOTLOADER"
+        : "AVR SERIAL BOOTLOADER · " + protocol
+    }
+
+    var model = String(
+      probe.chipModel || "UNKNOWN ESPRESSIF DEVICE"
+    )
     var revision = String(probe.chipRevision || "")
-    return revision === "" ? model : model + " · " + revision
+
+    return revision === ""
+      ? model
+      : model + " · " + revision
   }
 
   function cloneProbeFlashLabel(probe) {
     if (!probe) return ""
+
+    var family = String(probe.cloneFamily || "")
+
+    if (family === "avr-stk500v1-serial") {
+      var baud = Number(probe.baud || 0)
+      var signature = String(
+        probe.bootloaderReportedSignature || ""
+      ).toUpperCase()
+
+      var details = []
+
+      if (baud > 0)
+        details.push(String(baud) + " baud")
+
+      if (signature !== "")
+        details.push(
+          "REPORTED SIGNATURE " + signature
+        )
+
+      return details.length > 0
+        ? details.join(" · ")
+        : "AVR SERIAL PROFILE"
+    }
+
     var size = Number(probe.flashSize || 0)
-    var sizeLabel = size > 0 && size % (1024 * 1024) === 0
+    var sizeLabel =
+      size > 0 && size % (1024 * 1024) === 0
       ? String(size / (1024 * 1024)) + " MiB"
-      : (size > 0 ? String(size) + " B" : "FLASH SIZE UNKNOWN")
+      : (
+        size > 0
+        ? String(size) + " B"
+        : "FLASH SIZE UNKNOWN"
+      )
+
     var voltage = String(probe.flashVoltage || "")
-    return voltage === "" ? sizeLabel : sizeLabel + " · " + voltage
+
+    return voltage === ""
+      ? sizeLabel
+      : sizeLabel + " · " + voltage
   }
 
   function setDeviceBaud(device, baud) {
@@ -1863,8 +1950,8 @@ Panel {
             root.cloneTransactionEligible(deviceColumn.modelData)
           active: root.cloneTransactionArmedForCurrentPair()
           tooltipText: root.cloneTransactionArmedForCurrentPair()
-            ? "Confirm destructive raw flash clone to TARGET"
-            : "Arm raw flash clone for this TARGET"
+            ? "Confirm guarded clone to TARGET"
+            : "Arm guarded clone to TARGET"
           onActivated:
             root.activateCloneTransaction(deviceColumn.modelData)
         }
@@ -2136,7 +2223,7 @@ Panel {
 
         Text {
           visible: cloneEvidence.runResult !== null
-          text: "SHA-256 "
+          text: "FULL SHA-256 "
             + (cloneEvidence.runResult
               ? cloneEvidence.runResult.targetSha256
               : "")
@@ -2146,6 +2233,50 @@ Panel {
           font.pixelSize: Style.font.caption
           width: parent.width
           wrapMode: Text.WrapAnywhere
+        }
+
+        Text {
+          visible: cloneEvidence.runResult !== null
+            && cloneEvidence.runResult.cloneFamily
+              === "avr-stk500v1-serial"
+          text: "APPLICATION SHA-256 "
+            + (cloneEvidence.runResult
+              ? cloneEvidence.runResult.applicationSha256
+              : "")
+          color: root.bar.foreground
+          opacity: 0.75
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          width: parent.width
+          wrapMode: Text.WrapAnywhere
+        }
+
+        Text {
+          visible: cloneEvidence.runResult !== null
+            && cloneEvidence.runResult.cloneFamily
+              === "avr-stk500v1-serial"
+          text: "BOOTLOADER SHA-256 "
+            + (cloneEvidence.runResult
+              ? cloneEvidence.runResult.bootloaderSha256
+              : "")
+          color: root.bar.foreground
+          opacity: 0.75
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          width: parent.width
+          wrapMode: Text.WrapAnywhere
+        }
+
+        Text {
+          visible: cloneEvidence.runResult !== null
+            && cloneEvidence.runResult.cloneFamily
+              === "avr-stk500v1-serial"
+          text: "AVR APPLICATION · VERIFIED"
+          color: root.readyTone
+          font.family: root.bar.fontFamily
+          font.pixelSize: Style.font.caption
+          font.bold: true
+          font.letterSpacing: 1.0
         }
 
         Text {

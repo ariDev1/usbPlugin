@@ -539,5 +539,973 @@ class AdditionalSourceReadTests(unittest.TestCase):
             self.assertEqual(result["reason"], "cleanup-failed")
 
 
+class CloneFamilyDiscoveryRedGateTests(unittest.TestCase):
+    def test_probe_clone_family_api_exists(self):
+        self.assertTrue(
+            hasattr(usb_clone, "probe_clone_family"),
+            "probe_clone_family is not implemented",
+        )
+
+
+@unittest.skipUnless(
+    hasattr(usb_clone, "probe_clone_family"),
+    "probe_clone_family is not implemented",
+)
+class CloneFamilyDiscoveryContractTests(unittest.TestCase):
+    PORT = "/dev/serial/by-id/test"
+
+    def test_existing_esp32_probe_remains_first_and_stops_fallback(self):
+        esp32_probe = {
+            "ok": True,
+            "cloneFamily": "esp32-classic-spi-flash",
+        }
+
+        with patch(
+            "usb_clone.run_esp32_probe",
+            return_value=esp32_probe,
+        ) as esp32, patch(
+            "usb_clone.run_avr_probe",
+        ) as avr:
+            result = usb_clone.probe_clone_family(
+                self.PORT,
+                runner=object(),
+            )
+
+        self.assertIs(result, esp32_probe)
+        esp32.assert_called_once()
+        avr.assert_not_called()
+
+    def test_avr_probe_runs_only_after_esp32_probe_fails(self):
+        esp32_failure = {
+            "ok": False,
+            "cloneFamily": "",
+            "error": "probe-command-failed",
+        }
+        avr_probe = {
+            "ok": True,
+            "cloneFamily": "avr-stk500v1-serial",
+            "protocol": "stk500v1",
+            "baud": 115200,
+            "bootloaderReportedSignature": "1e950f",
+            "rawReadSupported": True,
+            "rawWriteCandidate": True,
+            "error": "",
+        }
+
+        with patch(
+            "usb_clone.run_esp32_probe",
+            return_value=esp32_failure,
+        ) as esp32, patch(
+            "usb_clone.run_avr_probe",
+            return_value=avr_probe,
+        ) as avr:
+            result = usb_clone.probe_clone_family(
+                self.PORT,
+                runner=object(),
+            )
+
+        self.assertIs(result, avr_probe)
+        esp32.assert_called_once()
+        avr.assert_called_once()
+
+    def test_unknown_device_fails_closed_after_both_read_only_probes(self):
+        esp32_failure = {
+            "ok": False,
+            "cloneFamily": "",
+            "error": "probe-command-failed",
+        }
+        avr_failure = {
+            "ok": False,
+            "cloneFamily": "",
+            "error": "avr-probe-command-failed",
+        }
+
+        with patch(
+            "usb_clone.run_esp32_probe",
+            return_value=esp32_failure,
+        ), patch(
+            "usb_clone.run_avr_probe",
+            return_value=avr_failure,
+        ):
+            result = usb_clone.probe_clone_family(
+                self.PORT,
+                runner=object(),
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["cloneFamily"], "")
+        self.assertEqual(
+            result["error"],
+            "unsupported-clone-family",
+        )
+
+
+class AvrSourceReadDispatchTests(unittest.TestCase):
+    def test_read_source_dispatches_to_avr_backend(self):
+        source_identity = "avr-source"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            runtime = root / "runtime"
+            runtime.mkdir()
+
+            usb = root / "usb"
+            usb.mkdir()
+            (usb / "devnum").write_text("7\n")
+
+            device = {
+                "connected": True,
+                "identityKey": source_identity,
+                "serialAvailable": True,
+                "readable": True,
+                "writable": True,
+                "locked": False,
+                "stablePath": "",
+                "port": "/dev/ttyUSB1",
+                "sysPath": str(usb),
+            }
+
+            scanner = lambda: [device]
+
+            avr_probe = {
+                "ok": True,
+                "cloneFamily": "avr-stk500v1-serial",
+                "protocol": "stk500v1",
+                "baud": 115200,
+                "bootloaderReportedSignature": "1e950f",
+                "rawReadSupported": True,
+                "rawWriteCandidate": True,
+                "error": "",
+            }
+
+            image = b"\x5a" * 32768
+            expected = hashlib.sha256(image).hexdigest()
+
+            def avr_read(port, output_path, *, runner):
+                self.assertEqual(port, "/dev/ttyUSB1")
+                output_path.write_bytes(image)
+
+            with patch(
+                "usb_clone.probe_clone_family",
+                return_value=avr_probe,
+            ) as discovery, patch(
+                "usb_clone.run_esp32_probe",
+                side_effect=AssertionError(
+                    "read_source bypassed family discovery"
+                ),
+            ), patch(
+                "usb_clone.read_avr_flash",
+                side_effect=avr_read,
+                create=True,
+            ) as avr_backend:
+                result = read_source(
+                    source_identity,
+                    scanner=scanner,
+                    runner=object(),
+                    environ={
+                        "XDG_RUNTIME_DIR": str(runtime),
+                    },
+                )
+
+            self.assertEqual(result["status"], "pass")
+            self.assertEqual(
+                result["cloneFamily"],
+                "avr-stk500v1-serial",
+            )
+            self.assertEqual(result["imageSize"], 32768)
+            self.assertEqual(result["sha256"], expected)
+
+            discovery.assert_called_once()
+            avr_backend.assert_called_once()
+
+            clone_root = (
+                runtime
+                / "omarchy"
+                / "usb-boards"
+                / "clone"
+            )
+
+            self.assertEqual(
+                list(clone_root.rglob("*.bin")),
+                [],
+            )
+
+
+class AvrCloneDiscoveryDispatchTests(unittest.TestCase):
+    def test_clone_flash_uses_family_discovery_for_both_devices(self):
+        source_identity = "avr-source"
+        target_identity = "avr-target"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            source_usb = root / "source-usb"
+            target_usb = root / "target-usb"
+            source_usb.mkdir()
+            target_usb.mkdir()
+
+            (source_usb / "devnum").write_text("7\n")
+            (target_usb / "devnum").write_text("8\n")
+
+            def device(identity, usb_path, port):
+                return {
+                    "connected": True,
+                    "identityKey": identity,
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                    "stablePath": "",
+                    "port": port,
+                    "sysPath": str(usb_path),
+                }
+
+            def scanner():
+                return [
+                    device(
+                        source_identity,
+                        source_usb,
+                        "/dev/ttyUSB1",
+                    ),
+                    device(
+                        target_identity,
+                        target_usb,
+                        "/dev/ttyUSB2",
+                    ),
+                ]
+
+            avr_probe = {
+                "ok": True,
+                "cloneFamily": "avr-stk500v1-serial",
+                "protocol": "stk500v1",
+                "baud": 115200,
+                "bootloaderReportedSignature": "1e950f",
+                "rawReadSupported": True,
+                "rawWriteCandidate": True,
+                "error": "",
+            }
+
+            class StopDecision:
+                allowed = False
+                reason = "test-stop"
+
+            with patch(
+                "usb_clone.probe_clone_family",
+                side_effect=[avr_probe, avr_probe],
+            ) as discovery, patch(
+                "usb_clone.run_esp32_probe",
+                side_effect=AssertionError(
+                    "clone_flash bypassed family discovery"
+                ),
+            ), patch(
+                "usb_clone.evaluate_write_pair",
+                return_value=StopDecision(),
+            ):
+                result = usb_clone.clone_flash(
+                    source_identity,
+                    target_identity,
+                    scanner=scanner,
+                    runner=object(),
+                    environ={},
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["reason"], "test-stop")
+            self.assertEqual(discovery.call_count, 2)
+
+            calls = discovery.call_args_list
+
+            self.assertEqual(
+                calls[0].args[0],
+                "/dev/ttyUSB1",
+            )
+            self.assertEqual(
+                calls[1].args[0],
+                "/dev/ttyUSB2",
+            )
+
+
+class AvrCloneSourceSnapshotTests(unittest.TestCase):
+    def test_clone_flash_reads_avr_source_before_any_write(self):
+        source_identity = "avr-source"
+        target_identity = "avr-target"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+
+            source_usb = root / "source-usb"
+            target_usb = root / "target-usb"
+            source_usb.mkdir()
+            target_usb.mkdir()
+
+            (source_usb / "devnum").write_text("7\n")
+            (target_usb / "devnum").write_text("8\n")
+
+            def device(identity, usb_path, port):
+                return {
+                    "connected": True,
+                    "identityKey": identity,
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                    "stablePath": "",
+                    "port": port,
+                    "sysPath": str(usb_path),
+                }
+
+            scan_count = 0
+
+            def scanner():
+                nonlocal scan_count
+                scan_count += 1
+
+                if scan_count == 2:
+                    (target_usb / "devnum").write_text("9\n")
+
+                return [
+                    device(
+                        source_identity,
+                        source_usb,
+                        "/dev/ttyUSB1",
+                    ),
+                    device(
+                        target_identity,
+                        target_usb,
+                        "/dev/ttyUSB2",
+                    ),
+                ]
+
+            avr_probe = {
+                "ok": True,
+                "cloneFamily": "avr-stk500v1-serial",
+                "protocol": "stk500v1",
+                "baud": 115200,
+                "bootloaderReportedSignature": "1e950f",
+                "rawReadSupported": True,
+                "rawWriteCandidate": True,
+                "error": "",
+            }
+
+            class AllowedDecision:
+                allowed = True
+                reason = ""
+                clone_family = "avr-stk500v1-serial"
+
+            def avr_read(port, output_path, *, runner):
+                self.assertEqual(port, "/dev/ttyUSB1")
+                output_path.write_bytes(b"\x5a" * 32768)
+
+            with patch(
+                "usb_clone.probe_clone_family",
+                side_effect=[avr_probe, avr_probe],
+            ), patch(
+                "usb_clone.evaluate_write_pair",
+                return_value=AllowedDecision(),
+            ), patch(
+                "usb_clone.read_avr_flash",
+                side_effect=avr_read,
+            ) as avr_backend, patch(
+                "usb_clone._run_source_read",
+                side_effect=AssertionError(
+                    "clone_flash bypassed AVR source backend"
+                ),
+            ), patch(
+                "usb_clone._run_target_write",
+                side_effect=AssertionError(
+                    "destructive write must not run"
+                ),
+            ):
+                result = usb_clone.clone_flash(
+                    source_identity,
+                    target_identity,
+                    scanner=scanner,
+                    runner=object(),
+                    environ={
+                        "XDG_RUNTIME_DIR": str(runtime),
+                    },
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(
+                result["reason"],
+                "target-connection-changed",
+            )
+            avr_backend.assert_called_once()
+
+
+class AvrCloneTargetWriteDispatchTests(unittest.TestCase):
+    def test_clone_flash_dispatches_avr_application_write(self):
+        source_identity = "avr-source"
+        target_identity = "avr-target"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+
+            source_usb = root / "source-usb"
+            target_usb = root / "target-usb"
+            source_usb.mkdir()
+            target_usb.mkdir()
+
+            (source_usb / "devnum").write_text("7\n")
+            (target_usb / "devnum").write_text("8\n")
+
+            def device(identity, usb_path, port):
+                return {
+                    "connected": True,
+                    "identityKey": identity,
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                    "stablePath": "",
+                    "port": port,
+                    "sysPath": str(usb_path),
+                }
+
+            def scanner():
+                return [
+                    device(
+                        source_identity,
+                        source_usb,
+                        "/dev/ttyUSB1",
+                    ),
+                    device(
+                        target_identity,
+                        target_usb,
+                        "/dev/ttyUSB2",
+                    ),
+                ]
+
+            avr_probe = {
+                "ok": True,
+                "cloneFamily": "avr-stk500v1-serial",
+                "protocol": "stk500v1",
+                "baud": 115200,
+                "bootloaderReportedSignature": "1e950f",
+                "rawReadSupported": True,
+                "rawWriteCandidate": True,
+                "error": "",
+            }
+
+            class AllowedDecision:
+                allowed = True
+                reason = ""
+                clone_family = "avr-stk500v1-serial"
+
+            def avr_read(port, output_path, *, runner):
+                if port == "/dev/ttyUSB1":
+                    output_path.write_bytes(b"\x5a" * 32768)
+                    return
+
+                if port == "/dev/ttyUSB2":
+                    raise RuntimeError(
+                        "test-stop-after-avr-write"
+                    )
+
+                raise AssertionError(
+                    f"unexpected AVR port: {port}"
+                )
+
+            with patch(
+                "usb_clone.probe_clone_family",
+                side_effect=[avr_probe, avr_probe],
+            ), patch(
+                "usb_clone.evaluate_write_pair",
+                return_value=AllowedDecision(),
+            ), patch(
+                "usb_clone.read_avr_flash",
+                side_effect=avr_read,
+            ), patch(
+                "usb_clone.write_application",
+                create=True,
+            ) as avr_write, patch(
+                "usb_clone._run_target_write",
+                side_effect=AssertionError(
+                    "clone_flash bypassed AVR write backend"
+                ),
+            ), patch(
+                "usb_clone._run_target_readback",
+                side_effect=RuntimeError(
+                    "test-stop-after-avr-write"
+                ),
+            ):
+                result = usb_clone.clone_flash(
+                    source_identity,
+                    target_identity,
+                    scanner=scanner,
+                    runner=object(),
+                    environ={
+                        "XDG_RUNTIME_DIR": str(runtime),
+                    },
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(
+                result["reason"],
+                "test-stop-after-avr-write",
+            )
+
+            avr_write.assert_called_once()
+
+            args = avr_write.call_args.args
+            self.assertEqual(args[0], "/dev/ttyUSB2")
+
+
+class AvrCloneTargetReadbackDispatchTests(unittest.TestCase):
+    def test_clone_flash_dispatches_avr_target_readback(self):
+        source_identity = "avr-source"
+        target_identity = "avr-target"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+
+            source_usb = root / "source-usb"
+            target_usb = root / "target-usb"
+            source_usb.mkdir()
+            target_usb.mkdir()
+
+            (source_usb / "devnum").write_text("7\n")
+            (target_usb / "devnum").write_text("8\n")
+
+            def device(identity, usb_path, port):
+                return {
+                    "connected": True,
+                    "identityKey": identity,
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                    "stablePath": "",
+                    "port": port,
+                    "sysPath": str(usb_path),
+                }
+
+            def scanner():
+                return [
+                    device(
+                        source_identity,
+                        source_usb,
+                        "/dev/ttyUSB1",
+                    ),
+                    device(
+                        target_identity,
+                        target_usb,
+                        "/dev/ttyUSB2",
+                    ),
+                ]
+
+            avr_probe = {
+                "ok": True,
+                "cloneFamily": "avr-stk500v1-serial",
+                "protocol": "stk500v1",
+                "baud": 115200,
+                "bootloaderReportedSignature": "1e950f",
+                "rawReadSupported": True,
+                "rawWriteCandidate": True,
+                "error": "",
+            }
+
+            class AllowedDecision:
+                allowed = True
+                reason = ""
+                clone_family = "avr-stk500v1-serial"
+
+            def avr_read(port, output_path, *, runner):
+                if port == "/dev/ttyUSB1":
+                    output_path.write_bytes(b"\x5a" * 32768)
+                    return
+
+                if port == "/dev/ttyUSB2":
+                    raise RuntimeError(
+                        "test-stop-after-avr-readback"
+                    )
+
+                raise AssertionError(
+                    f"unexpected AVR port: {port}"
+                )
+
+            with patch(
+                "usb_clone.probe_clone_family",
+                side_effect=[avr_probe, avr_probe],
+            ), patch(
+                "usb_clone.evaluate_write_pair",
+                return_value=AllowedDecision(),
+            ), patch(
+                "usb_clone.read_avr_flash",
+                side_effect=avr_read,
+            ) as avr_backend, patch(
+                "usb_clone.write_application",
+            ) as avr_write, patch(
+                "usb_clone._run_target_readback",
+                side_effect=AssertionError(
+                    "clone_flash bypassed AVR readback backend"
+                ),
+            ):
+                result = usb_clone.clone_flash(
+                    source_identity,
+                    target_identity,
+                    scanner=scanner,
+                    runner=object(),
+                    environ={
+                        "XDG_RUNTIME_DIR": str(runtime),
+                    },
+                )
+
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(
+                result["reason"],
+                "test-stop-after-avr-readback",
+            )
+
+            avr_write.assert_called_once()
+            self.assertEqual(avr_backend.call_count, 2)
+
+            self.assertEqual(
+                avr_backend.call_args_list[1].args[0],
+                "/dev/ttyUSB2",
+            )
+
+
+class AvrCloneTargetGeometryTests(unittest.TestCase):
+    def test_valid_32k_avr_target_readback_passes_size_gate(self):
+        source_identity = "avr-source"
+        target_identity = "avr-target"
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            runtime = root / "runtime"
+            runtime.mkdir()
+
+            source_usb = root / "source-usb"
+            target_usb = root / "target-usb"
+            source_usb.mkdir()
+            target_usb.mkdir()
+
+            (source_usb / "devnum").write_text("7\n")
+            (target_usb / "devnum").write_text("8\n")
+
+            def device(identity, usb_path, port):
+                return {
+                    "connected": True,
+                    "identityKey": identity,
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                    "stablePath": "",
+                    "port": port,
+                    "sysPath": str(usb_path),
+                }
+
+            def scanner():
+                return [
+                    device(
+                        source_identity,
+                        source_usb,
+                        "/dev/ttyUSB1",
+                    ),
+                    device(
+                        target_identity,
+                        target_usb,
+                        "/dev/ttyUSB2",
+                    ),
+                ]
+
+            avr_probe = {
+                "ok": True,
+                "cloneFamily": "avr-stk500v1-serial",
+                "protocol": "stk500v1",
+                "baud": 115200,
+                "bootloaderReportedSignature": "1e950f",
+                "rawReadSupported": True,
+                "rawWriteCandidate": True,
+                "error": "",
+            }
+
+            class AllowedDecision:
+                allowed = True
+                reason = ""
+                clone_family = "avr-stk500v1-serial"
+
+            image = b"\x5a" * 32768
+
+            def avr_read(port, output_path, *, runner):
+                output_path.write_bytes(image)
+
+            with patch(
+                "usb_clone.probe_clone_family",
+                side_effect=[avr_probe, avr_probe],
+            ), patch(
+                "usb_clone.evaluate_write_pair",
+                return_value=AllowedDecision(),
+            ), patch(
+                "usb_clone.read_avr_flash",
+                side_effect=avr_read,
+            ), patch(
+                "usb_clone.write_application",
+            ):
+                result = usb_clone.clone_flash(
+                    source_identity,
+                    target_identity,
+                    scanner=scanner,
+                    runner=object(),
+                    environ={
+                        "XDG_RUNTIME_DIR": str(runtime),
+                    },
+                )
+
+            self.assertNotEqual(
+                result.get("reason"),
+                "target-size-mismatch",
+            )
+
+
+class AvrCloneVerificationIntegrationTests(unittest.TestCase):
+    def run_avr_clone(
+        self,
+        *,
+        source_application_sha,
+        target_application_sha,
+    ):
+        import avr_clone
+
+        source_identity = "avr-source"
+        target_identity = "avr-target"
+
+        temporary = TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+
+        root = Path(temporary.name)
+        runtime = root / "runtime"
+        runtime.mkdir()
+
+        source_usb = root / "source-usb"
+        target_usb = root / "target-usb"
+        source_usb.mkdir()
+        target_usb.mkdir()
+
+        (source_usb / "devnum").write_text("7\n")
+        (target_usb / "devnum").write_text("8\n")
+
+        def device(identity, usb_path, port):
+            return {
+                "connected": True,
+                "identityKey": identity,
+                "serialAvailable": True,
+                "readable": True,
+                "writable": True,
+                "locked": False,
+                "stablePath": "",
+                "port": port,
+                "sysPath": str(usb_path),
+            }
+
+        def scanner():
+            return [
+                device(
+                    source_identity,
+                    source_usb,
+                    "/dev/ttyUSB1",
+                ),
+                device(
+                    target_identity,
+                    target_usb,
+                    "/dev/ttyUSB2",
+                ),
+            ]
+
+        avr_probe = {
+            "ok": True,
+            "cloneFamily": "avr-stk500v1-serial",
+            "protocol": "stk500v1",
+            "baud": 115200,
+            "bootloaderReportedSignature": "1e950f",
+            "rawReadSupported": True,
+            "rawWriteCandidate": True,
+            "error": "",
+        }
+
+        class AllowedDecision:
+            allowed = True
+            reason = ""
+            clone_family = "avr-stk500v1-serial"
+
+        source_evidence = avr_clone.AvrImageEvidence(
+            full_size=avr_clone.FULL_FLASH_SIZE,
+            full_sha256="source-full",
+            application_sha256=source_application_sha,
+            bootloader_sha256=(
+                avr_clone.VALIDATED_BOOTLOADER_SHA256
+            ),
+        )
+
+        target_evidence = avr_clone.AvrImageEvidence(
+            full_size=avr_clone.FULL_FLASH_SIZE,
+            full_sha256="target-full",
+            application_sha256=target_application_sha,
+            bootloader_sha256=(
+                avr_clone.VALIDATED_BOOTLOADER_SHA256
+            ),
+        )
+
+        def avr_read(port, output_path, *, runner):
+            output_path.write_bytes(b"\x5a" * 32768)
+
+            if port == "/dev/ttyUSB1":
+                return source_evidence
+
+            if port == "/dev/ttyUSB2":
+                return target_evidence
+
+            raise AssertionError(
+                f"unexpected AVR port: {port}"
+            )
+
+        with patch(
+            "usb_clone.probe_clone_family",
+            side_effect=[avr_probe, avr_probe],
+        ), patch(
+            "usb_clone.evaluate_write_pair",
+            return_value=AllowedDecision(),
+        ), patch(
+            "usb_clone.read_avr_flash",
+            side_effect=avr_read,
+        ), patch(
+            "usb_clone.write_application",
+        ):
+            return usb_clone.clone_flash(
+                source_identity,
+                target_identity,
+                scanner=scanner,
+                runner=object(),
+                environ={
+                    "XDG_RUNTIME_DIR": str(runtime),
+                },
+            )
+
+    def test_success_reports_explicit_avr_verification_evidence(self):
+        import avr_clone
+
+        result = self.run_avr_clone(
+            source_application_sha="same-application",
+            target_application_sha="same-application",
+        )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(
+            result["applicationSha256"],
+            "same-application",
+        )
+        self.assertEqual(
+            result["bootloaderSha256"],
+            avr_clone.VALIDATED_BOOTLOADER_SHA256,
+        )
+
+    def test_application_mismatch_fails_closed(self):
+        result = self.run_avr_clone(
+            source_application_sha="source-application",
+            target_application_sha="target-application",
+        )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["reason"],
+            "avr-application-verification-mismatch",
+        )
+
+
+class AvrProbeOperationTests(unittest.TestCase):
+    def test_probe_identity_uses_family_discovery(self):
+        identity = "avr-source"
+
+        device = {
+            "connected": True,
+            "identityKey": identity,
+            "serialAvailable": True,
+            "readable": True,
+            "writable": True,
+            "locked": False,
+            "stablePath": "",
+            "port": "/dev/ttyUSB1",
+            "sysPath": "/sys/test-avr",
+        }
+
+        avr_probe = {
+            "ok": True,
+            "cloneFamily": "avr-stk500v1-serial",
+            "protocol": "stk500v1",
+            "baud": 115200,
+            "bootloaderReportedSignature": "1e950f",
+            "rawReadSupported": True,
+            "rawWriteCandidate": True,
+            "error": "",
+        }
+
+        with patch(
+            "usb_clone.probe_clone_family",
+            return_value=avr_probe,
+        ) as discovery, patch(
+            "usb_clone.run_esp32_probe",
+            side_effect=AssertionError(
+                "probe operation bypassed family discovery"
+            ),
+        ):
+            result = usb_clone._probe_identity(
+                identity,
+                scanner=lambda: [device],
+                runner=object(),
+            )
+
+        self.assertEqual(result["status"], "pass")
+        self.assertEqual(
+            result["probe"]["cloneFamily"],
+            "avr-stk500v1-serial",
+        )
+        discovery.assert_called_once()
+
+    def test_probe_identity_fails_closed_for_unknown_family(self):
+        identity = "unknown-device"
+
+        device = {
+            "connected": True,
+            "identityKey": identity,
+            "serialAvailable": True,
+            "readable": True,
+            "writable": True,
+            "locked": False,
+            "stablePath": "",
+            "port": "/dev/ttyUSB9",
+            "sysPath": "/sys/test-unknown",
+        }
+
+        with patch(
+            "usb_clone.probe_clone_family",
+            return_value={
+                "ok": False,
+                "cloneFamily": "",
+                "error": "unsupported-clone-family",
+            },
+        ):
+            result = usb_clone._probe_identity(
+                identity,
+                scanner=lambda: [device],
+                runner=object(),
+            )
+
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(
+            result["reason"],
+            "unsupported-clone-family",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
