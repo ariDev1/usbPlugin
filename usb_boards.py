@@ -117,6 +117,22 @@ def udev_properties(port: str) -> dict[str, str]:
     return properties
 
 
+def read_properties(reader, port: str) -> dict[str, str]:
+    """Read udev properties for one port without failing the whole scan.
+
+    A scan feeds the panel's entire device list, so one port raising would empty
+    the widget and hide every other board. The default reader already contains
+    its own failures; this keeps the guarantee structural rather than dependent
+    on that discipline holding for every future reader.
+    """
+
+    try:
+        result = reader(port)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    return result if isinstance(result, dict) else {}
+
+
 def clean_name(value: str) -> str:
     return re.sub(r"[_\s]+", " ", value).strip()
 
@@ -390,7 +406,7 @@ def scan(
             if usb is None:
                 continue
 
-            properties = properties_reader(port)
+            properties = read_properties(properties_reader, port)
             details = usb_details(usb, properties)
             key = str(usb.resolve())
             device = devices.setdefault(key, base_device(usb, details, True))

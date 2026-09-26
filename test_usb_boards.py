@@ -775,3 +775,100 @@ class PlaceholderSerialIdentityTests(unittest.TestCase):
             device_identity("0403", "6001", "AB0JQVS6", "3-1.3"),
             ("usb-serial:0403:6001:AB0JQVS6", "usb-serial", False),
         )
+
+
+class MultiDeviceScanTests(unittest.TestCase):
+    """A scan must survive one bad device and still report the rest.
+
+    Every other scan fixture builds a single device, which cannot show whether a
+    failure on one port takes the others down with it. That is the failure the
+    panel would render as an empty widget.
+    """
+
+    def build_two(self, root: Path):
+        fixture = ScannerFixtureTests()
+        first = fixture.make_usb(
+            root, "1-2", "1a86", "7523", "WCH", "USB Serial", "ABC123XY"
+        )
+        fixture.add_tty(root, first, "ttyUSB0")
+        second = fixture.make_usb(
+            root, "1-3", "0403", "6001", "FTDI", "USB UART", "B003QCOH"
+        )
+        fixture.add_tty(root, second, "ttyUSB1")
+        return root
+
+    def scan(self, root: Path, properties_reader):
+        return scan(
+            sys_tty=root / "sys" / "class" / "tty",
+            sys_usb=root / "sys" / "bus" / "usb" / "devices",
+            dev_root=root / "dev",
+            serial_by_id=root / "dev" / "serial" / "by-id",
+            properties_reader=properties_reader,
+        )
+
+    def test_two_distinct_devices_are_both_reported(self):
+        with TemporaryDirectory() as directory:
+            root = self.build_two(Path(directory))
+            devices = self.scan(root, lambda port: {})
+
+        self.assertEqual(len(devices), 2)
+        self.assertEqual(
+            sorted(d["identityKey"] for d in devices),
+            ["usb-serial:0403:6001:B003QCOH", "usb-serial:1a86:7523:ABC123XY"],
+        )
+        self.assertTrue(all(d["connected"] for d in devices))
+        self.assertEqual(
+            sorted(Path(d["port"]).name for d in devices),
+            ["ttyUSB0", "ttyUSB1"],
+        )
+
+    def test_identities_stay_distinct(self):
+        with TemporaryDirectory() as directory:
+            root = self.build_two(Path(directory))
+            devices = self.scan(root, lambda port: {})
+
+        keys = [d["identityKey"] for d in devices]
+        self.assertEqual(len(set(keys)), len(keys))
+
+    def test_one_raising_port_does_not_hide_the_others(self):
+        # The load-bearing case: a reader that raises on one port must not empty
+        # the scan, because an empty scan is an empty panel.
+        def reader(port):
+            if port.endswith("ttyUSB0"):
+                raise OSError(5, "Input/output error")
+            return {"ID_SERIAL_SHORT": "B003QCOH"}
+
+        with TemporaryDirectory() as directory:
+            root = self.build_two(Path(directory))
+            devices = self.scan(root, reader)
+
+        self.assertEqual(len(devices), 2, "one raising port must not drop the other")
+        self.assertEqual(
+            sorted(d["identityKey"] for d in devices),
+            ["usb-serial:0403:6001:B003QCOH", "usb-serial:1a86:7523:ABC123XY"],
+        )
+
+    def test_one_port_returning_nothing_usable_does_not_hide_the_others(self):
+        def reader(port):
+            return {} if port.endswith("ttyUSB0") else {"ID_SERIAL_SHORT": "B003QCOH"}
+
+        with TemporaryDirectory() as directory:
+            root = self.build_two(Path(directory))
+            devices = self.scan(root, reader)
+
+        self.assertEqual(len(devices), 2)
+
+    def test_a_reader_returning_a_non_dict_is_tolerated(self):
+        with TemporaryDirectory() as directory:
+            root = self.build_two(Path(directory))
+            devices = self.scan(root, lambda port: None)
+
+        self.assertEqual(len(devices), 2)
+
+    def test_scan_order_is_deterministic_across_repeated_runs(self):
+        with TemporaryDirectory() as directory:
+            root = self.build_two(Path(directory))
+            first = [d["identityKey"] for d in self.scan(root, lambda port: {})]
+            second = [d["identityKey"] for d in self.scan(root, lambda port: {})]
+
+        self.assertEqual(first, second)
