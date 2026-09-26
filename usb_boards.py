@@ -96,7 +96,8 @@ def udev_properties(port: str) -> dict[str, str]:
             ["udevadm", "info", "--query=property", f"--name={port}"],
             check=False,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=2,
         )
     except (OSError, subprocess.TimeoutExpired):

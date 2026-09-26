@@ -83,7 +83,8 @@ def _run_checked(runner, args: list[str], timeout: float = 20.0) -> str:
         result = runner(
             args,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
         )

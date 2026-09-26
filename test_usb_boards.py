@@ -1,4 +1,5 @@
 import unittest
+import errno
 import fcntl
 import os
 import stat
@@ -6,10 +7,28 @@ from pathlib import Path
 import struct
 import termios
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from usb_boards import device_access, device_identity, identify_board, infer_mode, is_board_candidate, lock_info, scan
-from serial_monitor import SessionLogger, configure, line_ending_bytes, monitor, parse_data_format, session_log_path
+from usb_boards import (
+    device_access,
+    device_identity,
+    identify_board,
+    infer_mode,
+    is_board_candidate,
+    lock_info,
+    scan,
+    udev_properties,
+)
+from serial_monitor import (
+    SessionLogger,
+    configure,
+    line_ending_bytes,
+    monitor,
+    parse_data_format,
+    session_log_path,
+    write_all,
+)
 
 
 class IdentifyBoardTests(unittest.TestCase):
@@ -256,6 +275,73 @@ class ScannerFixtureTests(unittest.TestCase):
             self.assertEqual(self.fixture_scan(root), [])
 
 
+class UdevPropertiesDecodeTests(unittest.TestCase):
+    """A vendor descriptor is arbitrary bytes and must never abort the scan.
+
+    A raised UnicodeDecodeError escapes scan() and main(), so stdout stays
+    empty and the panel resolves the widget to no devices at all, which hides
+    the bar button. Undecodable bytes are replaced instead.
+    """
+
+    def decoding_runner(self, payload: bytes, calls: list | None = None):
+        """Stand in for subprocess.run, decoding exactly the way it does.
+
+        subprocess.run performs the decode itself from the text/encoding
+        arguments, so a stub that hands back an already-decoded string would
+        hide the very failure under test.
+        """
+
+        def runner(args, **kwargs):
+            if calls is not None:
+                calls.append((args, kwargs))
+            if kwargs.get("text"):
+                return SimpleNamespace(stdout=payload.decode("utf-8"), returncode=0)
+            return SimpleNamespace(
+                stdout=payload.decode(kwargs["encoding"], kwargs["errors"]),
+                returncode=0,
+            )
+
+        return runner
+
+    def test_undecodable_descriptor_bytes_are_replaced_not_raised(self):
+        calls: list = []
+        runner = self.decoding_runner(
+            b"ID_MODEL=\xff\xfe\nID_SERIAL_SHORT=ABC123\n", calls
+        )
+
+        with patch("usb_boards.subprocess.run", side_effect=runner):
+            result = udev_properties("/dev/ttyUSB0")
+
+        self.assertEqual(result["ID_SERIAL_SHORT"], "ABC123")
+        self.assertEqual(len(calls), 1)
+        kwargs = calls[0][1]
+        self.assertEqual(kwargs["encoding"], "utf-8")
+        self.assertEqual(kwargs["errors"], "replace")
+        self.assertNotIn("text", kwargs)
+        self.assertEqual(kwargs["timeout"], 2)
+
+    def test_scan_still_reports_devices_when_udev_output_is_undecodable(self):
+        fixture = ScannerFixtureTests()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            usb = fixture.make_usb(root, "1-4", "1a86", "7523", "WCH", "USB Serial", "ABC123")
+            fixture.add_tty(root, usb, "ttyUSB0")
+
+            with patch(
+                "usb_boards.subprocess.run",
+                side_effect=self.decoding_runner(b"ID_MODEL=\xff\xfe\n"),
+            ):
+                devices = scan(
+                    sys_tty=root / "sys" / "class" / "tty",
+                    sys_usb=root / "sys" / "bus" / "usb" / "devices",
+                    dev_root=root / "dev",
+                    serial_by_id=root / "dev" / "serial" / "by-id",
+                )
+
+        self.assertEqual(len(devices), 1)
+        self.assertEqual(devices[0]["identityKey"], "usb-serial:1a86:7523:ABC123")
+
+
 class DeviceIdentityQualityTests(unittest.TestCase):
     def test_cp2102_default_serial_is_not_portable_identity(self):
         self.assertEqual(
@@ -364,6 +450,120 @@ class SerialMonitorTests(unittest.TestCase):
         self.assertEqual(line_ending_bytes("lf"), b"\n")
         self.assertEqual(line_ending_bytes("cr"), b"\r")
         self.assertEqual(line_ending_bytes("crlf"), b"\r\n")
+
+    def test_write_all_completes_a_short_write(self):
+        # A single os.write is allowed to accept only part of the buffer.
+        # Returning less than the length used to truncate the transfer
+        # silently; the rest of the payload has to be retried.
+        written = bytearray()
+
+        def short_write(fd, data):
+            chunk = bytes(data)[:3]
+            written.extend(chunk)
+            return len(chunk)
+
+        with patch("serial_monitor.os.write", side_effect=short_write):
+            write_all(7, b"0123456789")
+
+        self.assertEqual(bytes(written), b"0123456789")
+
+    def test_write_all_waits_out_a_full_transmit_buffer(self):
+        # os.write refuses the write outright with BlockingIOError while the
+        # transmit buffer is full. That used to reach the outer handler and
+        # end the monitor mid-transfer.
+        attempts = []
+
+        def blocking_write(fd, data):
+            attempts.append(bytes(data))
+            if len(attempts) == 1:
+                raise BlockingIOError(errno.EAGAIN, "temporarily full")
+            written[:] = bytes(data)
+            return len(data)
+
+        written = bytearray()
+
+        def always_writable(read_fds, write_fds, error_fds, timeout=None):
+            return ([], [write_fds[0]], [])
+
+        with patch("serial_monitor.os.write", side_effect=blocking_write), patch(
+            "serial_monitor.select.select", side_effect=always_writable
+        ) as select_mock:
+            write_all(7, b"payload")
+
+        self.assertEqual(bytes(written), b"payload")
+        self.assertEqual(len(attempts), 2)
+        select_mock.assert_called_once()
+
+    def test_write_all_gives_up_when_the_port_never_drains(self):
+        def never_writable(read_fds, write_fds, error_fds, timeout=None):
+            return ([], [], [])
+
+        with patch(
+            "serial_monitor.os.write", side_effect=BlockingIOError(errno.EAGAIN, "full")
+        ), patch("serial_monitor.select.select", side_effect=never_writable):
+            with self.assertRaises(OSError) as raised:
+                write_all(7, b"payload", timeout=0.01)
+
+        self.assertEqual(raised.exception.errno, errno.EAGAIN)
+        self.assertIn("no progress", str(raised.exception))
+
+    def test_write_all_does_not_spin_when_the_port_reports_no_progress(self):
+        # select says writable but the write still refuses: the deadline has
+        # to bound this, otherwise the monitor busy-loops.
+        def always_writable(read_fds, write_fds, error_fds, timeout=None):
+            return ([], [write_fds[0]], [])
+
+        with patch(
+            "serial_monitor.os.write", side_effect=BlockingIOError(errno.EAGAIN, "full")
+        ), patch("serial_monitor.select.select", side_effect=always_writable):
+            with self.assertRaises(OSError):
+                write_all(7, b"payload", timeout=0.05)
+
+    def test_monitor_has_no_unguarded_write_on_the_transfer_path(self):
+        # Both directions of the transfer loop must go through write_all.
+        # A bare os.write can refuse the write or truncate it.
+        source = Path("serial_monitor.py").read_text()
+        body = source[source.index("def monitor("):]
+        self.assertNotIn("os.write(", body)
+        self.assertIn("write_all(sys.stdout.fileno(), data)", body)
+        self.assertIn("write_all(fd, data)", body)
+
+    def test_write_all_transfers_every_byte_over_a_real_descriptor(self):
+        # Exercises the real syscalls rather than a stub: a pty whose reader
+        # is slow forces both short writes and a full transmit buffer, which
+        # is the condition that used to truncate the transfer or abort it.
+        import pty
+        import threading
+        import tty
+
+        master, slave = pty.openpty()
+        # Raw mode, or the line discipline rewrites bytes as they pass.
+        tty.setraw(slave)
+        received = bytearray()
+        payload = bytes(range(256)) * 4096
+
+        def drain():
+            while len(received) < len(payload):
+                try:
+                    chunk = os.read(master, 65536)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                received.extend(chunk)
+
+        os.set_blocking(slave, False)
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        try:
+            write_all(slave, payload, timeout=30.0)
+        finally:
+            reader.join(timeout=5.0)
+            os.close(master)
+            os.close(slave)
+
+        self.assertEqual(len(received), len(payload))
+        self.assertEqual(bytes(received), payload)
 
     def test_session_logger_records_direction_and_payload(self):
         from tempfile import TemporaryDirectory

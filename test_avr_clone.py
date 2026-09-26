@@ -218,7 +218,9 @@ class AvrProbeContractTests(unittest.TestCase):
         )
 
         self.assertTrue(kwargs["capture_output"])
-        self.assertTrue(kwargs["text"])
+        self.assertEqual(kwargs["encoding"], "utf-8")
+        self.assertEqual(kwargs["errors"], "replace")
+        self.assertNotIn("text", kwargs)
         self.assertFalse(kwargs["check"])
 
         flattened = " ".join(command)
@@ -470,7 +472,9 @@ class AvrFlashReadContractTests(unittest.TestCase):
             )
 
             self.assertTrue(kwargs["capture_output"])
-            self.assertTrue(kwargs["text"])
+            self.assertEqual(kwargs["encoding"], "utf-8")
+            self.assertEqual(kwargs["errors"], "replace")
+            self.assertNotIn("text", kwargs)
             self.assertFalse(kwargs["check"])
 
             flattened = " ".join(command)
@@ -737,7 +741,9 @@ class AvrApplicationWriteContractTests(unittest.TestCase):
             )
 
             self.assertTrue(kwargs["capture_output"])
-            self.assertTrue(kwargs["text"])
+            self.assertEqual(kwargs["encoding"], "utf-8")
+            self.assertEqual(kwargs["errors"], "replace")
+            self.assertNotIn("text", kwargs)
             self.assertFalse(kwargs["check"])
 
             flattened = " ".join(command)

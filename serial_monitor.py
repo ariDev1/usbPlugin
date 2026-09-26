@@ -16,6 +16,7 @@ import struct
 import subprocess
 import sys
 import termios
+import time
 import tty
 
 
@@ -156,6 +157,31 @@ def configure(fd: int, baud: int, data_format: str = "8N1") -> None:
     termios.tcflush(fd, termios.TCIFLUSH)
 
 
+def write_all(fd: int, data: bytes, timeout: float = 5.0) -> None:
+    """Write every byte of data to a non-blocking descriptor.
+
+    os.write may accept only part of the buffer, and it refuses the write
+    outright while the transmit buffer is full. Treating that refusal as fatal
+    ended the monitor mid-transfer, so wait for the port to drain instead. The
+    deadline bounds the case where the port reports itself writable but keeps
+    making no progress, which would otherwise spin.
+    """
+
+    view = memoryview(data)
+    deadline = time.monotonic() + timeout
+    while view:
+        try:
+            written = os.write(fd, view)
+        except BlockingIOError:
+            written = 0
+        if written > 0:
+            view = view[written:]
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([], [fd], [], remaining)[1]:
+            raise OSError(errno.EAGAIN, "serial write made no progress")
+
+
 def monitor(port: str, baud: int, line_ending: str = "lf", log_path: Path | None = None,
             reconnect: bool = True, data_format: str = "8N1",
             log_dir: Path | None = None) -> int:
@@ -251,7 +277,7 @@ def monitor(port: str, baud: int, line_ending: str = "lf", log_path: Path | None
                 if data:
                     if logger:
                         logger.write("RX", data)
-                    os.write(sys.stdout.fileno(), data)
+                    write_all(sys.stdout.fileno(), data)
 
             if sys.stdin.isatty() and sys.stdin.fileno() in readable:
                 data = os.read(sys.stdin.fileno(), 1024)
@@ -262,7 +288,7 @@ def monitor(port: str, baud: int, line_ending: str = "lf", log_path: Path | None
                         data = data.rstrip(b"\r\n") + ending
                     if logger:
                         logger.write("TX", data)
-                    os.write(fd, data)
+                    write_all(fd, data)
     except (OSError, termios.error) as error:
         print(f"\r\nSerial monitor stopped: {error}", file=sys.stderr)
         return 1

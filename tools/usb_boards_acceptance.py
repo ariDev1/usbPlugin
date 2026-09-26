@@ -111,7 +111,8 @@ def _run_checked(
         list(args),
         cwd=str(cwd) if cwd is not None else None,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=timeout,
         check=False,
     )
@@ -195,7 +196,8 @@ def _read_runtime_state(
         result = runner(
             ["omarchy-shell", PLUGIN_ID, "state"],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=5.0,
             check=False,
         )

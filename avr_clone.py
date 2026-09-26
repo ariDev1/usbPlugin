@@ -153,7 +153,8 @@ def run_avr_probe(
         result = runner(
             command,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=20.0,
             check=False,
         )
@@ -217,7 +218,8 @@ def read_avr_flash(
         result = runner(
             command,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120.0,
             check=False,
         )
@@ -272,7 +274,8 @@ def write_application(
         result = runner(
             command,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=120.0,
             check=False,
         )
