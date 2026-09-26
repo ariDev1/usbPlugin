@@ -90,8 +90,17 @@ operations keep their existing state checks and confirmation workflow.
 USB Boards separates detection, physical identity, and the current connection
 path.
 
-A reported USB serial can provide portable identity. A known default serial or
-a missing serial uses USB topology and is port-bound.
+A reported USB serial can provide portable identity. A known default serial, a
+placeholder serial, or a missing serial uses USB topology and is port-bound.
+
+A placeholder serial is one built from a single repeated character, such as
+`000000000000`, or one shorter than eight characters. Real boards report longer
+serials: FTDI and many Arduino boards use eight characters, and ESP32 and CP210x
+units derive longer ones from a MAC address. A placeholder carries no evidence
+about which board is attached, so USB Boards rejects it rather than treating an
+unrecognised serial as proof. Otherwise two boards reporting the same
+placeholder would share one identity, and a saved profile would follow whichever
+of them happened to be plugged in.
 
 Generic FTDI, CP210x, CH34x, CH91xx, and PL2303 bridges identify the USB bridge
 only. USB Boards does not infer which development board is behind a generic
@@ -164,6 +173,35 @@ directory is owner-only (`0700`) and new log files are owner-only (`0600`).
 Session logs contain the complete RX/TX serial traffic. Treat them as
 potentially sensitive device data.
 
+## Reloading Plugin Code
+
+Which reload command you need depends on what you changed.
+
+Backend files (`usb_boards.py`, `serial_monitor.py`, `usb_clone.py`,
+`clone_policy.py`, `clone_probe.py`, `clone_tools.py`, `avr_clone.py`) are
+started as subprocesses by absolute path, so a new copy takes effect on the next
+invocation with no reload at all.
+
+QML files (`Panel.qml` and the `ProfileStore.js` it imports) are part of the
+loaded component. A mounted bar widget is not rebuilt by a plugin rescan,
+because the bar layout in `shell.json` has not changed and the shell has no
+reason to recreate the delegate. Force a full shell restart instead:
+
+```bash
+omarchy-restart-shell   # or: omarchy restart shell
+```
+
+A rescan registers new code for future instantiation but leaves an already
+mounted widget on the component it was built from:
+
+```bash
+omarchy-shell shell rescanPlugins
+```
+
+Verify which component is actually running rather than assuming. A change to
+`Panel.qml` is confirmed by the rendered panel; a change to a backend file is
+confirmed by invoking that file directly.
+
 ## Troubleshooting
 
 Run the scanner directly to separate USB discovery from panel rendering:
@@ -176,11 +214,8 @@ If nothing appears there, Linux has not exposed a supported USB device. Try a
 known data-capable cable and another USB port. A charging-only cable can power a
 board without making it discoverable.
 
-Force Omarchy to rediscover plugin files with:
-
-```bash
-omarchy-shell shell rescanPlugins
-```
+If the panel shows a value the scanner does not, the loaded component is stale.
+See [Reloading Plugin Code](#reloading-plugin-code).
 
 ## Development and Acceptance
 
@@ -193,6 +228,19 @@ python3 -m py_compile usb_boards.py serial_monitor.py clone_probe.py clone_polic
 bash -n install.sh
 omarchy plugin validate .
 ```
+
+`Panel.qml` also passes `qmllint`, which ships with `qt6-base` but is not on
+`PATH`. It also needs a `qs` import root, because the panel imports the shell's
+own `qs.Ui` and `qs.Commons` modules:
+
+```bash
+mkdir -p /tmp/usb-boards-qml && ln -sfn "$OMARCHY_PATH/shell" /tmp/usb-boards-qml/qs
+/usr/lib/qt6/bin/qmllint -I /tmp/usb-boards-qml Panel.qml
+```
+
+`qmllint` reports `missing-property` warnings for `root.bar.*` and
+`Style.font.*` because those are untyped on the JavaScript side; they are
+expected. Unresolved types or a nonzero exit status are not.
 
 On an Omarchy workstation, run the deterministic runtime acceptance gate:
 
