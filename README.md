@@ -147,6 +147,17 @@ Host clone support uses open-source command-line tools only: `esptool`,
 USB Boards does not install these tools or access a board during host preflight.
 Run `python3 usb_clone.py preflight` to check host readiness.
 
+The ESP32 parsers are written against the esptool and espefuse 5.x output
+dialect, so preflight requires that major version and reports
+`esptool-version-unsupported` or `espefuse-version-unsupported` otherwise. A
+tool version problem blocks only the ESP32 family. avrdude is not major-pinned,
+because only its signature output is parsed.
+
+A chip whose `RD_DIS` or `WR_DIS` fuse is set cannot take part: the first
+permanently disables reading SPI flash and the second permanently disables
+writing it. Preflight of a board reports this as `raw-read-unsupported` or
+`raw-write-unsupported` before any write is attempted.
+
 The AVR path writes only the application region `0x0000-0x7dff`. It preserves
 and validates the bootloader region `0x7e00-0x7fff`. It does not clone EEPROM,
 fuses, lock bits, calibration data, or factory identity.
