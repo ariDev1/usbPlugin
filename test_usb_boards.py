@@ -16,6 +16,7 @@ from usb_boards import (
     identify_board,
     infer_mode,
     is_board_candidate,
+    is_placeholder_serial,
     lock_info,
     scan,
     udev_properties,
@@ -203,12 +204,12 @@ class ScannerFixtureTests(unittest.TestCase):
     def test_usb_serial_identity_is_not_port_bound(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            usb = self.make_usb(root, "8-1", "10c4", "ea60", "Silicon Labs", "CP2102 USB to UART", "ABC123")
+            usb = self.make_usb(root, "8-1", "10c4", "ea60", "Silicon Labs", "CP2102 USB to UART", "ABC123XY")
             self.add_tty(root, usb, "ttyUSB0")
 
             devices = self.fixture_scan(root)
 
-            self.assertEqual(devices[0].get("identityKey"), "usb-serial:10c4:ea60:ABC123")
+            self.assertEqual(devices[0].get("identityKey"), "usb-serial:10c4:ea60:ABC123XY")
             self.assertEqual(devices[0].get("identityEvidence"), "usb-serial")
             self.assertFalse(devices[0].get("identityPortBound"))
 
@@ -306,13 +307,13 @@ class UdevPropertiesDecodeTests(unittest.TestCase):
     def test_undecodable_descriptor_bytes_are_replaced_not_raised(self):
         calls: list = []
         runner = self.decoding_runner(
-            b"ID_MODEL=\xff\xfe\nID_SERIAL_SHORT=ABC123\n", calls
+            b"ID_MODEL=\xff\xfe\nID_SERIAL_SHORT=ABC123XY\n", calls
         )
 
         with patch("usb_boards.subprocess.run", side_effect=runner):
             result = udev_properties("/dev/ttyUSB0")
 
-        self.assertEqual(result["ID_SERIAL_SHORT"], "ABC123")
+        self.assertEqual(result["ID_SERIAL_SHORT"], "ABC123XY")
         self.assertEqual(len(calls), 1)
         kwargs = calls[0][1]
         self.assertEqual(kwargs["encoding"], "utf-8")
@@ -324,7 +325,7 @@ class UdevPropertiesDecodeTests(unittest.TestCase):
         fixture = ScannerFixtureTests()
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            usb = fixture.make_usb(root, "1-4", "1a86", "7523", "WCH", "USB Serial", "ABC123")
+            usb = fixture.make_usb(root, "1-4", "1a86", "7523", "WCH", "USB Serial", "ABC123XY")
             fixture.add_tty(root, usb, "ttyUSB0")
 
             with patch(
@@ -339,7 +340,7 @@ class UdevPropertiesDecodeTests(unittest.TestCase):
                 )
 
         self.assertEqual(len(devices), 1)
-        self.assertEqual(devices[0]["identityKey"], "usb-serial:1a86:7523:ABC123")
+        self.assertEqual(devices[0]["identityKey"], "usb-serial:1a86:7523:ABC123XY")
 
 
 class DeviceIdentityQualityTests(unittest.TestCase):
@@ -351,8 +352,8 @@ class DeviceIdentityQualityTests(unittest.TestCase):
 
     def test_cp2102_non_default_serial_remains_portable_identity(self):
         self.assertEqual(
-            device_identity("10c4", "ea60", "ABC123", "2-1.2"),
-            ("usb-serial:10c4:ea60:ABC123", "usb-serial", False),
+            device_identity("10c4", "ea60", "ABC123XY", "2-1.2"),
+            ("usb-serial:10c4:ea60:ABC123XY", "usb-serial", False),
         )
 
 
@@ -703,3 +704,74 @@ class SerialMonitorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlaceholderSerialIdentityTests(unittest.TestCase):
+    """A placeholder serial must never become a portable device identity.
+
+    Two boards that both report a placeholder would share one identity key, and
+    a saved profile would then follow whichever of them is plugged in. The rule
+    fails closed towards a port-bound identity, which is the safe direction.
+    """
+
+    def test_placeholder_serials_are_recognised(self):
+        for serial in (
+            "",
+            "000000000000",
+            "000000000",
+            "FFFFFFFF",
+            "111111111111",
+            "0001",
+            "ABC",
+        ):
+            self.assertTrue(
+                is_placeholder_serial(serial),
+                "should be a placeholder: " + repr(serial),
+            )
+
+    def test_real_serials_are_not_placeholders(self):
+        for serial in (
+            "AB0JQVS6",
+            "B003QCOH",
+            "1S40ASZKW2NN27",
+            "64935343233351108182",
+            "301000001",
+            "0000:04:00.3",
+        ):
+            self.assertFalse(
+                is_placeholder_serial(serial),
+                "should be usable identity: " + repr(serial),
+            )
+
+    def test_all_zero_bridge_serial_is_not_portable_identity(self):
+        # A CH340/CH341 clone on this class of bridge. It is not the named
+        # CP2102 default, so only a general rule can catch it.
+        self.assertEqual(
+            device_identity("1a86", "7523", "000000000000", "1-1.3.2"),
+            ("usb-topology:1a86:7523:1-1.3.2", "usb-topology", True),
+        )
+
+    def test_unlisted_short_factory_default_is_not_portable_identity(self):
+        # 04f2:b6be reports "0001" and is not in the named denylist.
+        self.assertEqual(
+            device_identity("04f2", "b6be", "0001", "1-3"),
+            ("usb-topology:04f2:b6be:1-3", "usb-topology", True),
+        )
+
+    def test_named_factory_default_is_still_rejected(self):
+        self.assertEqual(
+            device_identity("10c4", "ea60", "0001", "2-1.2"),
+            ("usb-topology:10c4:ea60:2-1.2", "usb-topology", True),
+        )
+
+    def test_missing_serial_still_reports_missing(self):
+        self.assertEqual(
+            device_identity("1a86", "7523", "", "1-4"),
+            ("usb-topology:1a86:7523:1-4", "usb-topology", True),
+        )
+
+    def test_eight_character_serial_remains_portable(self):
+        self.assertEqual(
+            device_identity("0403", "6001", "AB0JQVS6", "3-1.3"),
+            ("usb-serial:0403:6001:AB0JQVS6", "usb-serial", False),
+        )

@@ -169,6 +169,7 @@ function migrate(rawStore, legacyProfiles, connectedDevices) {
     record.migrationEvidence = ""
 
     var targets = {}
+    var targetCounts = {}
     for (var i = 0; i < devices.length; i++) {
       var device = devices[i]
       if (portableIdentity(device) && exactRecordedMatch(record.profile, device)) {
@@ -176,13 +177,23 @@ function migrate(rawStore, legacyProfiles, connectedDevices) {
         if (targetKey !== "") {
           targets[targetKey] = true
           deviceByTarget[targetKey] = device
+          targetCounts[targetKey] = (targetCounts[targetKey] || 0) + 1
         }
       }
     }
 
+    // Count devices, not identity keys. Every device reaching this point matched
+    // the recorded vendor, product and serial, and the identity key is derived
+    // from exactly those three, so they all share one key and counting keys can
+    // only ever yield zero or one. Two boards answering to one key is the case
+    // that matters, and only a device count can see it.
     var targetKeys = Object.keys(targets).sort()
     if (targetKeys.length === 1) {
       var onlyTarget = targetKeys[0]
+      if (targetCounts[onlyTarget] > 1) {
+        record.migrationReason = "ambiguous-identity"
+        return
+      }
       if (!candidatesByTarget[onlyTarget]) candidatesByTarget[onlyTarget] = []
       candidatesByTarget[onlyTarget].push(sourceKey)
       return

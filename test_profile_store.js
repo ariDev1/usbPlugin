@@ -548,3 +548,122 @@ test("offline identity profile preserves recorded scanner diagnostics", () => {
   assert.strictEqual(projected[0].identificationEvidence, "bridge")
   assert.strictEqual(projected[0].identificationScope, "bridge")
 })
+
+test("two boards sharing one identity never migrate to a single profile", () => {
+  // Two physically distinct boards report the same vendor, product and serial,
+  // so they resolve to the same identity key. The recorded serial cannot say
+  // which one the profile belongs to, so nothing may be written.
+  const key = "/dev/serial/by-id/old"
+  const legacy = {
+    [key]: {
+      baudRate: 9600,
+      lineEnding: "lf",
+      dataFormat: "8N1",
+      sessionLogging: true,
+      nickname: "bench-board",
+      vendorId: "1a86",
+      productId: "7523",
+      manufacturer: "QinHeng",
+      usbProduct: "USB Serial",
+      serial: "000000000000",
+      bridge: "CH340"
+    }
+  }
+
+  const first = portableDevice(
+    "usb-serial:1a86:7523:000000000000", "1a86", "7523", "000000000000"
+  )
+  first.stablePath = key
+  const second = portableDevice(
+    "usb-serial:1a86:7523:000000000000", "1a86", "7523", "000000000000"
+  )
+  second.stablePath = "/dev/ttyUSB1"
+
+  const result = Store.migrate("", legacy, [first, second])
+
+  assert.deepStrictEqual(
+    Object.keys(result.store.profiles),
+    [],
+    "an ambiguous identity must not receive a profile"
+  )
+  assert.strictEqual(
+    result.store.legacyProfiles[key].migrationState,
+    "unresolved"
+  )
+  assert.strictEqual(
+    result.store.legacyProfiles[key].migrationReason,
+    "ambiguous-identity"
+  )
+  assert.strictEqual(result.store.legacyProfiles[key].targetKey, "")
+})
+
+test("ambiguous identity is stable across repeated migration", () => {
+  // The reason is re-derived on every scan, so a value that did not converge
+  // would rewrite the settings store on every poll.
+  const key = "/dev/serial/by-id/old"
+  const legacy = {
+    [key]: {
+      baudRate: 9600,
+      lineEnding: "lf",
+      dataFormat: "8N1",
+      sessionLogging: true,
+      nickname: "",
+      vendorId: "1a86",
+      productId: "7523",
+      manufacturer: "QinHeng",
+      usbProduct: "USB Serial",
+      serial: "000000000000",
+      bridge: "CH340"
+    }
+  }
+  const devices = [
+    Object.assign(
+      portableDevice("usb-serial:1a86:7523:000000000000", "1a86", "7523", "000000000000"),
+      {stablePath: key}
+    ),
+    portableDevice("usb-serial:1a86:7523:000000000000", "1a86", "7523", "000000000000")
+  ]
+
+  const first = Store.migrate("", legacy, devices)
+  assert.strictEqual(first.changed, true)
+
+  const second = Store.migrate(first.canonical, legacy, devices)
+  assert.strictEqual(
+    second.changed,
+    false,
+    "a repeated scan must not rewrite the store"
+  )
+  assert.strictEqual(second.canonical, first.canonical)
+})
+
+test("a single board with a shared identity still migrates", () => {
+  // The device count must not reject the ordinary one-device case that the
+  // key count used to handle.
+  const key = "/dev/serial/by-id/old"
+  const legacy = {
+    [key]: {
+      baudRate: 9600,
+      lineEnding: "lf",
+      dataFormat: "8N1",
+      sessionLogging: true,
+      nickname: "bench-board",
+      vendorId: "1a86",
+      productId: "7523",
+      manufacturer: "QinHeng",
+      usbProduct: "USB Serial",
+      serial: "AB0JQVS6",
+      bridge: "CH340"
+    }
+  }
+  const device = portableDevice(
+    "usb-serial:1a86:7523:AB0JQVS6", "1a86", "7523", "AB0JQVS6"
+  )
+  device.stablePath = key
+
+  const result = Store.migrate("", legacy, [device])
+  assert.strictEqual(
+    result.store.profiles["usb-serial:1a86:7523:AB0JQVS6"].nickname,
+    "bench-board"
+  )
+  assert.strictEqual(result.store.legacyProfiles[key].migrationState, "migrated")
+})

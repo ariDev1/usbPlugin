@@ -19,10 +19,16 @@ LOCK_DIRS = (Path("/run/lock"), Path("/var/lock"))
 
 # A non-empty USB serial string is evidence, but it is not always unique.
 # The classic CP2102 factory default is "0001", so it must not be used as a
-# portable profile identity without stronger evidence.
+# portable profile identity without stronger evidence. Named explicitly so a
+# newly seen factory default can be recorded rather than inferred.
 KNOWN_NON_UNIQUE_USB_SERIALS = {
     ("10c4", "ea60", "0001"),
 }
+
+# Bridges with no real serial report a placeholder instead of omitting it.
+# Real development-board serials are long: FTDI and many Arduino boards use
+# eight characters, ESP32 and CP210x units derive longer ones from a MAC.
+MIN_PORTABLE_SERIAL_LENGTH = 8
 
 # A bridge identifies the USB-to-serial chip, not the board behind it.
 BRIDGES = {
@@ -272,12 +278,34 @@ def usb_details(usb: Path, properties: dict[str, str] | None = None) -> dict[str
     }
 
 
+def is_placeholder_serial(serial: str) -> bool:
+    """Report whether a USB serial is a placeholder rather than device evidence.
+
+    A serial built from one repeated character ("000000000000", "FFFFFFFF") or
+    too short to be a real unit number carries no information about which board
+    it is. Treating one as a portable identity gives two different boards the
+    same identity key, and a saved profile then applies to whichever of them is
+    plugged in. Anything unrecognised fails closed, towards a port-bound
+    identity, which is the safe direction: the profile follows the port instead
+    of following the wrong board.
+    """
+
+    text = str(serial or "").strip()
+    if not text:
+        return True
+    if len(set(text)) == 1:
+        return True
+    return len(text) < MIN_PORTABLE_SERIAL_LENGTH
+
+
 def serial_identity_quality(vendor: str, product: str, serial: str) -> str:
     """Classify whether a reported USB serial is safe for portable profile matching."""
 
     if not serial:
         return "missing"
     if (vendor, product, serial) in KNOWN_NON_UNIQUE_USB_SERIALS:
+        return "known-default"
+    if is_placeholder_serial(serial):
         return "known-default"
     return "reported"
 
