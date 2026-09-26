@@ -159,7 +159,23 @@ class CloneUiRoleProbeContractTests(unittest.TestCase):
     def test_active_probe_evidence_is_separate_from_passive_evidence(self):
         self.assertIn('if (device.confidence === "bridge-only") return "BOARD UNKNOWN"', self.source)
         self.assertIn("id: cloneEvidence", self.source)
-        self.assertIn("ACTIVE PROBE", self.source)
+        # "ACTIVE" belongs only to the in-flight label. Stored probe evidence
+        # is a finished probe that stays on screen for the whole session, so
+        # calling it active contradicts the PASS or FAILED line right below it.
+        self.assertIn('"ACTIVE PROBE · RUNNING"', self.source)
+        self.assertIn(
+            'text: "PROBE · " + root.cloneProbeDeviceLabel(',
+            self.source,
+        )
+        self.assertIn(
+            'text: "PROBE FAILED · " + cloneEvidence.probeError',
+            self.source,
+        )
+        self.assertEqual(
+            self.source.count('"ACTIVE PROBE'),
+            1,
+            "only the in-flight probe label may claim to be active",
+        )
 
     def test_disconnect_invalidates_roles_and_probe_evidence(self):
         self.assertIn("function reconcileCloneState(scannedDevices)", self.source)
@@ -1905,3 +1921,86 @@ class CloneUiSourceOnlyReadControlContractTests(unittest.TestCase):
             "=== root.cloneIdentityKey(deviceColumn.modelData)",
             block,
         )
+
+
+class CloneDiagnosticContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+
+    def process_block(self, process_id: str) -> str:
+        start = self.source.find("id: " + process_id)
+        self.assertGreaterEqual(start, 0, process_id + " not found")
+        end = self.source.find("\n  Process {", start)
+        end = len(self.source) if end < 0 else end
+        return self.source[start:end]
+
+    def test_every_clone_process_captures_its_stderr(self):
+        # The backend keeps its JSON on stdout and its diagnostics on stderr.
+        # A stderr collector with no handler discards the traceback, leaving
+        # only a generic invalid-result token with nothing to act on.
+        for process_id in ("cloneProbeProc", "cloneReadProc", "cloneRunProc"):
+            block = self.process_block(process_id)
+            self.assertIn("stderr: StdioCollector {", block, process_id)
+            self.assertIn("onStreamFinished: root.captureCloneStderr(text)", block, process_id)
+
+    def test_no_clone_process_discards_stderr(self):
+        for process_id in ("cloneProbeProc", "cloneReadProc", "cloneRunProc"):
+            block = self.process_block(process_id)
+            bare = block.replace(
+                "onStreamFinished: root.captureCloneStderr(text)", ""
+            )
+            self.assertNotIn(
+                "stderr: StdioCollector {\n      waitForEnd: true\n    }",
+                bare,
+                process_id + " has a stderr collector with no handler",
+            )
+
+    def test_clone_diagnostic_is_bounded_and_single_line(self):
+        block = self.source[
+            self.source.find("function captureCloneStderr(raw)"):
+            self.source.find("function cloneErrorLabel(reason)")
+        ]
+        self.assertIn("root.cloneStderr = \"\"", self.source)
+        # A traceback is many lines; only the last meaningful one is shown, and
+        # it is truncated so a long path cannot wreck the panel layout.
+        self.assertIn("summary.substring(0, 117)", block)
+        self.assertIn("...\"", block)
+
+    def test_clone_diagnostic_is_cleared_before_each_command(self):
+        # A stale diagnostic must never be attributed to a later failure.
+        for starter, following in (
+            ("startCloneSourceRead(device)", "validCloneSha256(value)"),
+            ("startCloneProbe(device)", "finishCloneProbe(raw)"),
+            ("activateCloneTransaction(device)", "finishCloneTransaction(raw)"),
+        ):
+            block = self.source[
+                self.source.find("function " + starter):
+                self.source.find("function " + following)
+            ]
+            self.assertIn("root.clearCloneStderr()", block, starter)
+
+    def test_clone_error_label_is_derived_not_folded_into_the_stored_token(self):
+        # stdout and stderr collectors finish in an unspecified order, so the
+        # diagnostic may land after the result was validated. A binding picks
+        # it up whenever it arrives; baking it into the token at validation
+        # time would drop it half the time.
+        block = self.source[
+            self.source.find("function cloneErrorLabel(reason)"):
+            self.source.find("function cloneSourceReadEligible(device)")
+        ]
+        self.assertIn("root.cloneStderr === \"\"", block)
+        self.assertIn("String(reason) + \" · \" + root.cloneStderr", block)
+
+    def test_panel_renders_the_diagnostic_for_every_clone_failure(self):
+        for label, wrapped in (
+            ("probeError", "root.cloneErrorLabel(\n          root.cloneProbeErrorFor("),
+            ("readError", "? root.cloneErrorLabel(root.cloneReadError) : \"\""),
+            ("runError", "? root.cloneErrorLabel(root.cloneRunError) : \"\""),
+        ):
+            self.assertIn(
+                "readonly property string " + label + ":",
+                self.source,
+                label,
+            )
+            self.assertIn(wrapped, self.source, label)

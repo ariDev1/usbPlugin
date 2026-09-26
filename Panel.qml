@@ -41,6 +41,7 @@ Panel {
   property string cloneRunTargetKey: ""
   property var cloneRunResult: null
   property string cloneRunError: ""
+  property string cloneStderr: ""
   property bool offlineFoldOpen: false
   property string expandedOfflineKey: ""
   property string workbenchLeftKey: ""
@@ -558,6 +559,38 @@ Panel {
     root.cloneReadError = ""
   }
 
+  // The clone backend keeps its JSON envelope on stdout and its diagnostics on
+  // stderr. Only one clone command runs at a time, so a single capture is
+  // enough, and it is cleared whenever a new command starts so a stale
+  // diagnostic can never be attributed to a later failure.
+  function clearCloneStderr() {
+    root.cloneStderr = ""
+  }
+
+  function captureCloneStderr(raw) {
+    var lines = String(raw || "").split("\n")
+    var summary = ""
+    for (var index = lines.length - 1; index >= 0; index--) {
+      var line = String(lines[index]).trim()
+      if (line === "") continue
+      summary = line
+      break
+    }
+    root.cloneStderr = summary.length > 120
+      ? summary.substring(0, 117) + "..."
+      : summary
+  }
+
+  // Derived rather than folded into the stored token: stdout and stderr
+  // collectors finish in an unspecified order, so the diagnostic may land after
+  // the result has been validated. A binding picks it up whenever it arrives.
+  function cloneErrorLabel(reason) {
+    if (String(reason || "") === "") return ""
+    return root.cloneStderr === ""
+      ? String(reason)
+      : String(reason) + " · " + root.cloneStderr
+  }
+
   function cloneSourceReadEligible(device) {
     var key = root.cloneIdentityKey(device)
     if (key === "" || key !== root.cloneSourceKey) return false
@@ -577,6 +610,7 @@ Panel {
     root.clearCloneReadEvidence()
     root.cloneReadKey = key
     root.cloneReadBusy = true
+    root.clearCloneStderr()
     cloneReadProc.command = ["python3", root.cloneBackendPath, "read-source", "--identity-key", key]
     cloneReadProc.running = true
   }
@@ -726,6 +760,7 @@ Panel {
     root.cloneRunBusy = true
     root.cloneRunResult = null
     root.cloneRunError = ""
+    root.clearCloneStderr()
 
     cloneRunProc.command = ["python3", root.cloneBackendPath, "clone",
       "--source-identity-key", sourceKey,
@@ -872,6 +907,7 @@ Panel {
     root.setCloneProbeEvidence(key, null, "")
     root.cloneProbeKey = key
     root.cloneProbeBusy = true
+    root.clearCloneStderr()
     cloneProbeProc.command = ["python3", root.cloneBackendPath, "probe", "--identity-key", key]
     cloneProbeProc.running = true
   }
@@ -1501,6 +1537,7 @@ Panel {
     }
     stderr: StdioCollector {
       waitForEnd: true
+      onStreamFinished: root.captureCloneStderr(text)
     }
   }
 
@@ -1513,6 +1550,7 @@ Panel {
     }
     stderr: StdioCollector {
       waitForEnd: true
+      onStreamFinished: root.captureCloneStderr(text)
     }
   }
 
@@ -1525,6 +1563,7 @@ Panel {
     }
     stderr: StdioCollector {
       waitForEnd: true
+      onStreamFinished: root.captureCloneStderr(text)
     }
   }
 
@@ -2158,12 +2197,14 @@ Panel {
         width: parent.width
         spacing: Style.space(1)
         readonly property var evidence: root.cloneProbeResultFor(deviceColumn.modelData)
-        readonly property string probeError: root.cloneProbeErrorFor(deviceColumn.modelData)
+        readonly property string probeError: root.cloneErrorLabel(
+          root.cloneProbeErrorFor(deviceColumn.modelData)
+        )
         readonly property var readResult: root.cloneReadResult
           && root.cloneReadResult.identityKey === String(deviceColumn.modelData.identityKey || "")
           ? root.cloneReadResult : null
         readonly property string readError: root.cloneSourceKey === String(deviceColumn.modelData.identityKey || "")
-          ? root.cloneReadError : ""
+          ? root.cloneErrorLabel(root.cloneReadError) : ""
         readonly property var runResult: root.cloneRunResult
           && root.cloneRunResult.targetIdentityKey
             === String(deviceColumn.modelData.identityKey || "")
@@ -2171,7 +2212,7 @@ Panel {
         readonly property string runError:
           root.cloneRunTargetKey
             === String(deviceColumn.modelData.identityKey || "")
-          ? root.cloneRunError : ""
+          ? root.cloneErrorLabel(root.cloneRunError) : ""
         readonly property string identityKey: String(deviceColumn.modelData.identityKey || "")
         visible: evidence !== null
           || probeError !== ""
@@ -2197,7 +2238,7 @@ Panel {
 
         Text {
           visible: cloneEvidence.probeError !== ""
-          text: "ACTIVE PROBE FAILED · " + cloneEvidence.probeError
+          text: "PROBE FAILED · " + cloneEvidence.probeError
           color: root.bar.urgent
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.caption
@@ -2208,7 +2249,7 @@ Panel {
 
         Text {
           visible: cloneEvidence.evidence !== null
-          text: "ACTIVE PROBE · " + root.cloneProbeDeviceLabel(cloneEvidence.evidence)
+          text: "PROBE · " + root.cloneProbeDeviceLabel(cloneEvidence.evidence)
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.bodySmall
