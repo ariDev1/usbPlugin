@@ -11,7 +11,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+import traceback
 
 from clone_policy import evaluate_source, evaluate_write_pair
 from clone_tools import run_preflight as run_tool_preflight
@@ -25,9 +27,25 @@ from avr_clone import (
 )
 
 
-FLASH_SIZE = 4 * 1024 * 1024
-FLASH_SIZE_HEX = "0x400000"
 READ_BAUD = "460800"
+
+
+def _esp32_image_size(probe: dict[str, object]) -> int:
+    """Return the ESP32 image size the policy actually approved.
+
+    The read length and the expected readback size must come from the same
+    probe evidence the policy gated on. Reading a hard-coded 4 MiB regardless
+    would let a newly validated larger flash profile produce a truncated image
+    on both sides, whose digests would still match and report a clean clone.
+    """
+
+    try:
+        size = int(probe.get("flashSize") or 0)
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("image-size-unknown") from error
+    if size <= 0:
+        raise RuntimeError("image-size-unknown")
+    return size
 
 
 @dataclass(frozen=True)
@@ -89,6 +107,23 @@ def _failure(reason: str) -> dict[str, object]:
     }
 
 
+def _reason_for(error: BaseException, *, trace: bool = False) -> str:
+    """Map an exception onto a stable reason token for the panel.
+
+    RuntimeError already carries a reason token as its message, so it passes
+    through unchanged. Anything else reaching an operation boundary is
+    unforeseen: report one coarse token to the panel and keep the traceback on
+    stderr, which the panel surfaces as a bounded one-line diagnostic. The
+    panel must never be left guessing because stdout was empty.
+    """
+
+    if isinstance(error, RuntimeError):
+        return str(error) or "operation-failed"
+    if trace:
+        traceback.print_exc()
+    return "host-io-error" if isinstance(error, OSError) else "operation-failed"
+
+
 def _secure_clone_root(environ: dict[str, str]) -> Path:
     runtime = str(environ.get("XDG_RUNTIME_DIR") or "")
     if not runtime:
@@ -126,7 +161,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _run_source_read(runner, path: str, image_path: Path) -> None:
+def _run_source_read(runner, path: str, image_path: Path, size: int) -> None:
     try:
         result = runner(
             [
@@ -137,11 +172,12 @@ def _run_source_read(runner, path: str, image_path: Path) -> None:
                 READ_BAUD,
                 "read-flash",
                 "0",
-                FLASH_SIZE_HEX,
+                f"0x{size:x}",
                 str(image_path),
             ],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=600.0,
             check=False,
         )
@@ -175,7 +211,8 @@ def _run_target_write(runner, path: str, image_path: Path) -> None:
                 str(image_path),
             ],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=600.0,
             check=False,
         )
@@ -186,7 +223,7 @@ def _run_target_write(runner, path: str, image_path: Path) -> None:
         raise RuntimeError("target-write-failed")
 
 
-def _run_target_readback(runner, path: str, image_path: Path) -> None:
+def _run_target_readback(runner, path: str, image_path: Path, size: int) -> None:
     try:
         result = runner(
             [
@@ -197,11 +234,12 @@ def _run_target_readback(runner, path: str, image_path: Path) -> None:
                 READ_BAUD,
                 "read-flash",
                 "0",
-                FLASH_SIZE_HEX,
+                f"0x{size:x}",
                 str(image_path),
             ],
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=600.0,
             check=False,
         )
@@ -270,11 +308,12 @@ def read_source(
             _prepare_private_image(image_path)
 
             if decision.clone_family == "esp32-classic-spi-flash":
-                expected_size = FLASH_SIZE
+                expected_size = _esp32_image_size(probe)
                 _run_source_read(
                     runner,
                     path,
                     image_path,
+                    expected_size,
                 )
             elif decision.clone_family == "avr-stk500v1-serial":
                 expected_size = AVR_FLASH_SIZE
@@ -314,14 +353,17 @@ def read_source(
                 "imageSize": size,
                 "sha256": digest,
             }
-    except RuntimeError as error:
-        result = _failure(str(error))
+    except (RuntimeError, OSError) as error:
+        result = _failure(_reason_for(error, trace=True))
 
     if transaction_dir is not None:
         try:
             shutil.rmtree(transaction_dir)
-        except OSError:
-            return _failure("cleanup-failed")
+        except OSError as error:
+            # A leftover private image directory is worth reporting, but it must
+            # not overwrite the outcome of the operation that already finished.
+            result = dict(result, cleanup="failed")
+            print(f"usb_clone: cleanup failed: {error}", file=sys.stderr)
     return result
 
 
@@ -382,11 +424,12 @@ def clone_flash(
             target_avr_evidence = None
 
             if decision.clone_family == "esp32-classic-spi-flash":
-                expected_source_size = FLASH_SIZE
+                expected_source_size = _esp32_image_size(source_probe)
                 _run_source_read(
                     runner,
                     source_path,
                     source_image,
+                    expected_source_size,
                 )
             elif decision.clone_family == "avr-stk500v1-serial":
                 expected_source_size = AVR_FLASH_SIZE
@@ -427,6 +470,14 @@ def clone_flash(
             if read_connection_token(current_target) != target_token:
                 raise RuntimeError("target-connection-changed")
 
+            # The tokens prove a device with each identity is still attached, but
+            # they say nothing about the paths captured before the source read.
+            # Take the paths from the devices just verified, so a target that was
+            # re-enumerated onto a different tty while the source was read cannot
+            # redirect the write.
+            source_path = device_path(current_source)
+            target_path = device_path(current_target)
+
             # This is the first destructive operation.
             if decision.clone_family == "esp32-classic-spi-flash":
                 # Keep the ESP32 target in the ROM bootloader.
@@ -451,6 +502,7 @@ def clone_flash(
                     runner,
                     target_path,
                     target_image,
+                    _esp32_image_size(target_probe),
                 )
             elif decision.clone_family == "avr-stk500v1-serial":
                 target_avr_evidence = read_avr_flash(
@@ -467,7 +519,7 @@ def clone_flash(
                 raise RuntimeError("target-readback-failed") from error
 
             if decision.clone_family == "esp32-classic-spi-flash":
-                expected_target_size = FLASH_SIZE
+                expected_target_size = _esp32_image_size(target_probe)
             elif decision.clone_family == "avr-stk500v1-serial":
                 expected_target_size = AVR_FLASH_SIZE
             else:
@@ -528,14 +580,17 @@ def clone_flash(
             else:
                 raise RuntimeError("unsupported-clone-family")
 
-    except RuntimeError as error:
-        result = _clone_failure(str(error))
+    except (RuntimeError, OSError) as error:
+        result = _clone_failure(_reason_for(error, trace=True))
 
     if transaction_dir is not None:
         try:
             shutil.rmtree(transaction_dir)
-        except OSError:
-            return _clone_failure("cleanup-failed")
+        except OSError as error:
+            # The write may already have succeeded and been verified. Report the
+            # cleanup problem alongside that result instead of replacing it.
+            result = dict(result, cleanup="failed")
+            print(f"usb_clone: cleanup failed: {error}", file=sys.stderr)
 
     return result
 
@@ -544,13 +599,13 @@ def _probe_identity(identity_key: str, *, scanner, runner) -> dict[str, object]:
     try:
         device = resolve_connected_device(identity_key, scanner())
         path = device_path(device)
-    except RuntimeError as error:
+        probe = probe_clone_family(path, runner=runner)
+    except (RuntimeError, OSError) as error:
         return {
             "operation": "probe",
             "status": "failed",
-            "reason": str(error),
+            "reason": _reason_for(error, trace=True),
         }
-    probe = probe_clone_family(path, runner=runner)
     if probe.get("ok") is not True:
         return {
             "operation": "probe",
@@ -587,27 +642,40 @@ def main(
     args = parser.parse_args(argv)
     scanner = scanner or _default_scanner
 
-    if args.operation == "preflight":
-        result = run_tool_preflight(runner=runner)
-    elif args.operation == "probe":
-        result = _probe_identity(args.identity_key, scanner=scanner, runner=runner)
-    elif args.operation == "read-source":
-        result = read_source(
-            args.identity_key,
-            scanner=scanner,
-            runner=runner,
-            environ=environ,
+    # stdout is the panel's only result channel, so every exit path must emit
+    # one well-formed envelope. An unforeseen error is reported as a coarse
+    # token with the traceback on stderr rather than as an empty stdout.
+    try:
+        if args.operation == "preflight":
+            result = run_tool_preflight(runner=runner)
+        elif args.operation == "probe":
+            result = _probe_identity(args.identity_key, scanner=scanner, runner=runner)
+        elif args.operation == "read-source":
+            result = read_source(
+                args.identity_key,
+                scanner=scanner,
+                runner=runner,
+                environ=environ,
+            )
+        elif args.confirm_target_identity != args.target_identity_key:
+            result = _clone_failure("target-confirmation-mismatch")
+        else:
+            result = clone_flash(
+                args.source_identity_key,
+                args.target_identity_key,
+                scanner=scanner,
+                runner=runner,
+                environ=environ,
+            )
+    except Exception as error:  # noqa: BLE001 - the envelope is the contract
+        traceback.print_exc()
+        reason = _reason_for(error)
+        result = (
+            _failure(reason)
+            if args.operation == "read-source"
+            else _clone_failure(reason)
         )
-    elif args.confirm_target_identity != args.target_identity_key:
-        result = _clone_failure("target-confirmation-mismatch")
-    else:
-        result = clone_flash(
-            args.source_identity_key,
-            args.target_identity_key,
-            scanner=scanner,
-            runner=runner,
-            environ=environ,
-        )
+
     printer(json.dumps(result, sort_keys=True))
     return 0 if result.get("status") == "pass" else 1
 
