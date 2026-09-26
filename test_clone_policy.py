@@ -29,6 +29,8 @@ def valid_probe(mac="68:09:47:9e:3c:88"):
         "secureBootV1": False,
         "secureBootV2": False,
         "uartDownloadEnabled": True,
+        "rdDis": 0,
+        "wrDis": 0,
         "rawReadSupported": True,
         "rawWriteCandidate": False,
     }

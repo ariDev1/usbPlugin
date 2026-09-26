@@ -204,3 +204,131 @@ class ProbeFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FlashFuseGateTests(unittest.TestCase):
+    """RD_DIS and WR_DIS disable the SPI flash paths in hardware.
+
+    The clone transaction reads the source, writes the target, then reads the
+    target back. A chip with either fuse set cannot take part, so the probe has
+    to say so instead of reporting the flash as readable and writable.
+    """
+
+    def fuses(self, rd=0, wr=0):
+        return json.dumps({
+            "FLASH_CRYPT_CNT": {"value": 0, "readable": True, "writeable": True},
+            "ABS_DONE_0": {"value": False, "readable": True, "writeable": True},
+            "ABS_DONE_1": {"value": False, "readable": True, "writeable": True},
+            "UART_DOWNLOAD_DIS": {"value": False, "readable": True, "writeable": True},
+            "RD_DIS": {"value": rd, "readable": True, "writeable": True},
+            "WR_DIS": {"value": wr, "readable": True, "writeable": True},
+        })
+
+    def probe_with(self, rd, wr, mac="68:09:47:9e:3c:88"):
+        def runner(args, **kwargs):
+            command = list(args)
+            if command[-1] == "chip-id":
+                output = CHIP_ID
+                if mac != "68:09:47:9e:3c:88":
+                    output = output.replace("68:09:47:9e:3c:88", mac)
+                return CompletedProcess(command, 0, output, "")
+            if command[-1] == "flash-id":
+                return CompletedProcess(command, 0, FLASH_ID, "")
+            return CompletedProcess(command, 0, self.fuses(rd, wr), "")
+
+        return run_esp32_probe("/dev/ttyUSB1", runner=runner)
+
+    def test_unrestricted_chip_is_readable_and_writable(self):
+        probe = self.probe_with(0, 0)
+        self.assertEqual(probe["ok"], True)
+        self.assertEqual(probe["rdDis"], 0)
+        self.assertEqual(probe["wrDis"], 0)
+        self.assertTrue(probe["rawReadSupported"])
+        self.assertTrue(probe["rawWriteCandidate"])
+
+    def test_read_disabled_fuse_blocks_read_support(self):
+        probe = self.probe_with(1, 0)
+        self.assertEqual(probe["ok"], True, "the chip is still identified")
+        self.assertEqual(probe["rdDis"], 1)
+        self.assertFalse(probe["rawReadSupported"])
+        self.assertFalse(probe["rawWriteCandidate"])
+
+    def test_write_disabled_fuse_blocks_write_candidate(self):
+        probe = self.probe_with(0, 1)
+        self.assertEqual(probe["ok"], True)
+        self.assertEqual(probe["wrDis"], 1)
+        self.assertTrue(probe["rawReadSupported"], "reads are still permitted")
+        self.assertFalse(probe["rawWriteCandidate"])
+
+    def test_policy_rejects_a_chip_whose_flash_cannot_be_read(self):
+        from clone_policy import evaluate_source
+
+        probe = self.probe_with(1, 0)
+        self.assertEqual(
+            evaluate_source(
+                {
+                    "connected": True,
+                    "identityKey": "usb-serial:0403:6001:AB0JQVS6",
+                    "serialAvailable": True,
+                    "readable": True,
+                    "writable": True,
+                    "locked": False,
+                },
+                probe,
+            ).reason,
+            "raw-read-unsupported",
+        )
+
+    def test_a_write_disabled_chip_is_still_a_valid_read_source(self):
+        # WR_DIS blocks writing, not reading, so the pair stays compatible for
+        # a source read and only the write gate refuses it.
+        from clone_policy import evaluate_pair
+
+        decision = evaluate_pair(
+            {
+                "connected": True,
+                "identityKey": "usb-serial:0403:6001:AAAAAAAA",
+                "serialAvailable": True,
+                "readable": True,
+                "writable": True,
+                "locked": False,
+            },
+            {
+                "connected": True,
+                "identityKey": "usb-serial:0403:6001:BBBBBBBB",
+                "serialAvailable": True,
+                "readable": True,
+                "writable": True,
+                "locked": False,
+            },
+            self.probe_with(0, 1, mac="68:09:47:9e:3c:99"),
+            self.probe_with(0, 0),
+        )
+        self.assertTrue(decision.allowed)
+        self.assertEqual(decision.clone_family, "esp32-classic-spi-flash")
+
+    def test_policy_rejects_a_pair_when_the_target_cannot_be_written(self):
+        from clone_policy import evaluate_write_pair
+
+        decision = evaluate_write_pair(
+            {
+                "connected": True,
+                "identityKey": "usb-serial:0403:6001:AAAAAAAA",
+                "serialAvailable": True,
+                "readable": True,
+                "writable": True,
+                "locked": False,
+            },
+            {
+                "connected": True,
+                "identityKey": "usb-serial:0403:6001:BBBBBBBB",
+                "serialAvailable": True,
+                "readable": True,
+                "writable": True,
+                "locked": False,
+            },
+            self.probe_with(0, 0),
+            self.probe_with(0, 1, mac="68:09:47:9e:3c:99"),
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.reason, "raw-write-unsupported")

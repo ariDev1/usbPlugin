@@ -8,18 +8,29 @@ import shutil
 import subprocess
 
 
+# Every parser in clone_probe is written against one esptool/espefuse output
+# dialect. esptool 4 reports "Crystal is 40MHz" where 5 reports
+# "Crystal frequency: 40MHz", so a different major version turns every ESP32
+# probe into "missing-crystal" and the board looks unsupported rather than the
+# tool looking wrong. Pinning the major version makes preflight say so before
+# any hardware is touched. avrdude is unpinned because the only output parsed
+# is the -U signature, whose format has been stable across many releases.
 TOOL_SPECS = {
     "esptool": {
         "versionArgs": ("version",),
         "versionPattern": r"(?i)\besptool\s+v?([0-9][0-9A-Za-z.+_-]*)",
+        "supportedMajor": 5,
     },
     "espefuse": {
-        "versionArgs": None,
-        "versionPattern": None,
+        # espefuse has no version subcommand; the banner carries the version.
+        "versionArgs": ("--help",),
+        "versionPattern": r"(?i)\bespefuse\s+v([0-9][0-9A-Za-z.+_-]*)",
+        "supportedMajor": 5,
     },
     "avrdude": {
         "versionArgs": ("--version",),
         "versionPattern": r"(?i)\bavrdude\s+version\s+([0-9][0-9A-Za-z.+_-]*)",
+        "supportedMajor": None,
     },
 }
 
@@ -45,6 +56,36 @@ def _missing_tool(name: str) -> dict[str, object]:
     }
 
 
+def _version_supported(version: str, supported_major: int) -> bool:
+    """Report whether a reported version is in the dialect this code parses.
+
+    Compares the leading integer only. A tool that prints something
+    unparseable here has already failed the version pattern, so the only
+    remaining doubt is a leading component that is not a plain number.
+    """
+
+    match = re.match(r"[0-9]+", str(version or ""))
+    if not match:
+        return False
+    return int(match.group(0)) == supported_major
+
+
+def _reported(
+    name: str,
+    path: str,
+    status: str,
+    reason: str,
+    version: str = "",
+) -> dict[str, object]:
+    return {
+        "available": True,
+        "path": path,
+        "version": version,
+        "versionStatus": status,
+        "reason": reason,
+    }
+
+
 def _inspect_tool(
     name: str,
     spec: dict[str, object],
@@ -57,21 +98,9 @@ def _inspect_tool(
     if not path:
         return _missing_tool(name)
 
-    version_args = spec["versionArgs"]
-    version_pattern = spec["versionPattern"]
-
-    if version_args is None:
-        return {
-            "available": True,
-            "path": str(path),
-            "version": "",
-            "versionStatus": "not-queried",
-            "reason": "",
-        }
-
     command = [
         str(path),
-        *version_args,
+        *spec["versionArgs"],
     ]
 
     try:
@@ -84,46 +113,34 @@ def _inspect_tool(
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return {
-            "available": True,
-            "path": str(path),
-            "version": "",
-            "versionStatus": "query-failed",
-            "reason": f"{name}-version-query-failed",
-        }
+        return _reported(name, str(path), "query-failed", f"{name}-version-query-failed")
 
     if result.returncode != 0:
-        return {
-            "available": True,
-            "path": str(path),
-            "version": "",
-            "versionStatus": "query-failed",
-            "reason": f"{name}-version-query-failed",
-        }
+        return _reported(name, str(path), "query-failed", f"{name}-version-query-failed")
 
     text = (
         f"{result.stdout or ''}\n"
         f"{result.stderr or ''}"
     )
 
-    match = re.search(str(version_pattern), text)
+    match = re.search(str(spec["versionPattern"]), text)
 
     if not match:
-        return {
-            "available": True,
-            "path": str(path),
-            "version": "",
-            "versionStatus": "query-failed",
-            "reason": f"{name}-version-query-failed",
-        }
+        return _reported(name, str(path), "query-failed", f"{name}-version-query-failed")
 
-    return {
-        "available": True,
-        "path": str(path),
-        "version": match.group(1),
-        "versionStatus": "reported",
-        "reason": "",
-    }
+    version = match.group(1)
+
+    supported_major = spec["supportedMajor"]
+    if supported_major is not None and not _version_supported(version, supported_major):
+        return _reported(
+            name,
+            str(path),
+            "unsupported",
+            f"{name}-version-unsupported",
+            version,
+        )
+
+    return _reported(name, str(path), "reported", "", version)
 
 
 def _family_status(

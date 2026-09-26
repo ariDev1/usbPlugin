@@ -117,8 +117,18 @@ def run_esp32_probe(port: str, runner=subprocess.run) -> dict[str, object]:
         flash = parse_flash_id(flash_text)
         security = parse_efuse_json(efuse_text)
 
+        # RD_DIS and WR_DIS permanently disable the SPI flash read and write
+        # paths in hardware. The clone transaction reads the source, writes the
+        # target, then reads the target back, so a chip with either fuse set
+        # cannot take part, and saying otherwise only produces a confusing
+        # failure part-way through.
+        flash_readable = security["rdDis"] == 0
+        flash_writable = security["wrDis"] == 0
+
         raw_write_candidate = (
-            security["flashEncryption"] is False
+            flash_readable
+            and flash_writable
+            and security["flashEncryption"] is False
             and security["secureBootV1"] is False
             and security["secureBootV2"] is False
             and security["uartDownloadEnabled"] is True
@@ -130,9 +140,8 @@ def run_esp32_probe(port: str, runner=subprocess.run) -> dict[str, object]:
             **chip,
             **flash,
             **security,
-            "rawReadSupported": True,
+            "rawReadSupported": flash_readable,
             "rawWriteCandidate": raw_write_candidate,
-            "toolVersion": "esptool-cli",
             "error": "",
         }
     except ProbeError as error:

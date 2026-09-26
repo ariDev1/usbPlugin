@@ -44,6 +44,14 @@ class CloneToolPreflightTests(unittest.TestCase):
                     "",
                 )
 
+            if command == ["/usr/bin/espefuse", "--help"]:
+                return CompletedProcess(
+                    command,
+                    0,
+                    "espefuse v5.3.1 - Utility for eFuse configuration in Espressif SoCs.\n",
+                    "",
+                )
+
             if command == ["/usr/bin/avrdude", "--version"]:
                 return CompletedProcess(
                     command,
@@ -80,8 +88,8 @@ class CloneToolPreflightTests(unittest.TestCase):
             {
                 "available": True,
                 "path": "/usr/bin/espefuse",
-                "version": "",
-                "versionStatus": "not-queried",
+                "version": "5.3.1",
+                "versionStatus": "reported",
                 "reason": "",
             },
         )
@@ -117,6 +125,7 @@ class CloneToolPreflightTests(unittest.TestCase):
             calls,
             [
                 ["/usr/bin/esptool", "version"],
+                ["/usr/bin/espefuse", "--help"],
                 ["/usr/bin/avrdude", "--version"],
             ],
         )
@@ -140,6 +149,14 @@ class CloneToolPreflightTests(unittest.TestCase):
                     command,
                     0,
                     "esptool v5.3.1\n",
+                    "",
+                )
+
+            if command == ["/usr/bin/espefuse", "--help"]:
+                return CompletedProcess(
+                    command,
+                    0,
+                    "espefuse v5.3.1 - Utility for eFuse configuration in Espressif SoCs.\n",
                     "",
                 )
 
@@ -202,6 +219,14 @@ class CloneToolPreflightTests(unittest.TestCase):
                     1,
                     "",
                     "version failed",
+                )
+
+            if command == ["/usr/bin/espefuse", "--help"]:
+                return CompletedProcess(
+                    command,
+                    0,
+                    "espefuse v5.3.1 - Utility for eFuse configuration in Espressif SoCs.\n",
+                    "",
                 )
 
             if command == ["/usr/bin/avrdude", "--version"]:
@@ -297,3 +322,96 @@ class CloneToolPreflightTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolVersionPinTests(unittest.TestCase):
+    """A parser written for one output dialect must not be fed another.
+
+    esptool 4 prints "Crystal is 40MHz" where 5 prints
+    "Crystal frequency: 40MHz", so an unpinned v4 turns every ESP32 probe into
+    "missing-crystal" and the board looks unsupported. Preflight has to name the
+    tool version instead.
+    """
+
+    def run_preflight(self, esptool_version, espefuse_version="5.3.1",
+                      avrdude_version="8.1"):
+        paths = {
+            "esptool": "/usr/bin/esptool",
+            "espefuse": "/usr/bin/espefuse",
+            "avrdude": "/usr/bin/avrdude",
+        }
+
+        def resolver(name):
+            return paths.get(name)
+
+        def runner(args, **kwargs):
+            command = list(args)
+            if command == ["/usr/bin/esptool", "version"]:
+                return CompletedProcess(command, 0, f"esptool v{esptool_version}\n", "")
+            if command == ["/usr/bin/espefuse", "--help"]:
+                return CompletedProcess(
+                    command,
+                    0,
+                    f"espefuse v{espefuse_version} - Utility for eFuse configuration.\n",
+                    "",
+                )
+            return CompletedProcess(command, 0, f"avrdude version {avrdude_version}\n", "")
+
+        return clone_tools.run_preflight(resolver=resolver, runner=runner)
+
+    def test_supported_major_is_ready(self):
+        result = self.run_preflight("5.3.1")
+        self.assertEqual(result["tools"]["esptool"]["versionStatus"], "reported")
+        self.assertEqual(result["tools"]["esptool"]["reason"], "")
+        self.assertTrue(result["families"]["esp32-classic-spi-flash"]["ready"])
+
+    def test_minor_and_patch_differences_are_tolerated(self):
+        result = self.run_preflight("5.9.0")
+        self.assertTrue(result["families"]["esp32-classic-spi-flash"]["ready"])
+
+    def test_unsupported_esptool_major_blocks_only_the_esp32_family(self):
+        result = self.run_preflight("4.8.1")
+
+        tool = result["tools"]["esptool"]
+        self.assertEqual(tool["versionStatus"], "unsupported")
+        self.assertEqual(tool["version"], "4.8.1", "the real version is still reported")
+        self.assertEqual(tool["reason"], "esptool-version-unsupported")
+
+        self.assertEqual(
+            result["families"]["esp32-classic-spi-flash"],
+            {"ready": False, "reason": "esptool-version-unsupported"},
+        )
+        self.assertTrue(
+            result["families"]["avr-stk500v1-serial"]["ready"],
+            "an ESP32 tool problem must not block AVR clones",
+        )
+
+    def test_unsupported_espefuse_major_blocks_the_esp32_family(self):
+        result = self.run_preflight("5.3.1", espefuse_version="4.1.0")
+        self.assertEqual(
+            result["tools"]["espefuse"]["reason"],
+            "espefuse-version-unsupported",
+        )
+        self.assertFalse(result["families"]["esp32-classic-spi-flash"]["ready"])
+
+    def test_avrdude_is_not_major_pinned(self):
+        # Only the -U signature output is parsed, and that format is stable
+        # across many avrdude releases, so a new major must not block AVR
+        # clones even though the esptool major is pinned.
+        self.assertIsNone(clone_tools.TOOL_SPECS["avrdude"]["supportedMajor"])
+        for version in ("7.0", "9.9", "10.1"):
+            result = self.run_preflight("5.3.1", avrdude_version=version)
+            self.assertEqual(result["tools"]["avrdude"]["version"], version)
+            self.assertEqual(result["tools"]["avrdude"]["versionStatus"], "reported")
+            self.assertTrue(
+                result["families"]["avr-stk500v1-serial"]["ready"],
+                f"avrdude {version} must not block AVR clones",
+            )
+
+    def test_version_comparison_helper(self):
+        self.assertTrue(clone_tools._version_supported("5", 5))
+        self.assertTrue(clone_tools._version_supported("5.3.1", 5))
+        self.assertFalse(clone_tools._version_supported("4.8.1", 5))
+        self.assertFalse(clone_tools._version_supported("15.0", 5))
+        self.assertFalse(clone_tools._version_supported("", 5))
+        self.assertFalse(clone_tools._version_supported("v5", 5))

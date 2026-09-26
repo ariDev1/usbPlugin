@@ -93,6 +93,8 @@ def _probe_gate(probe: dict[str, object] | None, *, require_validated_profile: b
         "secureBootV2",
         "uartDownloadEnabled",
         "rawReadSupported",
+        "rdDis",
+        "wrDis",
     )
     if any(name not in probe for name in required):
         return _reject("probe-incomplete")
