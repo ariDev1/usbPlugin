@@ -361,6 +361,66 @@ class CloneUiVisualHierarchyContractTests(unittest.TestCase):
         )
 
 
+class PlainTextPresentationContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.source = Path("Panel.qml").read_text()
+        cls.normalized = " ".join(cls.source.split())
+
+    def assert_plain_text_near(self, expression, window=500):
+        start = self.source.find(expression)
+        self.assertGreaterEqual(
+            start,
+            0,
+            msg=f"expected UI expression not found: {expression}",
+        )
+
+        block = self.source[start:start + window]
+        self.assertIn(
+            "textFormat: Text.PlainText",
+            block,
+            msg=f"dynamic text is not forced to Text.PlainText: {expression}",
+        )
+
+    def test_display_names_are_plain_text(self):
+        for expression in (
+            "text: root.displayName(modelData)",
+            "text: root.displayName(deviceColumn.modelData)",
+            'root.displayName(actionMenuSurface.device) + " · ACTIONS"',
+        ):
+            self.assert_plain_text_near(expression)
+
+    def test_connected_rack_metadata_is_plain_text(self):
+        self.assert_plain_text_near(
+            "text: root.deviceStatus(modelData)",
+        )
+
+    def test_reusable_dynamic_value_components_are_plain_text(self):
+        compact_start = self.source.find("component CompactValue: Text")
+        detail_start = self.source.find(
+            "component DetailLine: Item",
+            compact_start,
+        )
+
+        self.assertGreaterEqual(compact_start, 0)
+        self.assertGreater(detail_start, compact_start)
+
+        compact_block = self.source[compact_start:detail_start]
+        self.assertIn(
+            "textFormat: Text.PlainText",
+            compact_block,
+        )
+
+        value_start = self.source.find("id: detailValue", detail_start)
+        self.assertGreaterEqual(value_start, 0)
+
+        value_block = self.source[value_start:value_start + 500]
+        self.assertIn(
+            "textFormat: Text.PlainText",
+            value_block,
+        )
+
+
 class CloneUiOfflineFoldContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

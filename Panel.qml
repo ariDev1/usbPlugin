@@ -1944,6 +1944,7 @@ Panel {
 
           Text {
             text: root.displayName(modelData)
+            textFormat: Text.PlainText
             color: root.bar.foreground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.bodySmall
@@ -1971,6 +1972,7 @@ Panel {
               || String(modelData.mode || "USB").toUpperCase())
             + " · "
             + (modelData.port || "NO PORT")
+          textFormat: Text.PlainText
           color: root.deviceStatusTone(modelData)
           opacity: 0.78
           font.family: root.bar.fontFamily
@@ -2037,6 +2039,7 @@ Panel {
           id: deviceName
           visible: !nameField.visible
           text: root.displayName(deviceColumn.modelData)
+          textFormat: Text.PlainText
           color: root.bar.foreground
           opacity: deviceColumn.modelData.connected ? 1.0 : 0.45
           font.family: root.bar.fontFamily
@@ -2848,6 +2851,7 @@ Panel {
         text: actionMenuSurface.device
           ? root.displayName(actionMenuSurface.device) + " · ACTIONS"
           : "ACTIONS"
+        textFormat: Text.PlainText
         color: root.bar.foreground
         font.family: root.bar.fontFamily
         font.pixelSize: Style.font.subtitle
@@ -3005,6 +3009,7 @@ Panel {
           id: offlineName
           visible: !offlineNameField.visible
           text: root.displayName(modelData)
+          textFormat: Text.PlainText
           color: root.bar.foreground
           font.family: root.bar.fontFamily
           font.pixelSize: Style.font.subtitle
@@ -3260,6 +3265,7 @@ Panel {
 
   component CompactValue: Text {
     property bool urgent: false
+    textFormat: Text.PlainText
     color: urgent ? root.bar.urgent : root.bar.foreground
     opacity: urgent ? 1.0 : 0.92
     font.family: root.bar.fontFamily
@@ -3292,6 +3298,7 @@ Panel {
     Text {
       id: detailValue
       text: parent.value
+      textFormat: Text.PlainText
       color: parent.urgent ? root.bar.urgent : root.bar.foreground
       opacity: parent.urgent ? 1.0 : 0.92
       font.family: root.bar.fontFamily
